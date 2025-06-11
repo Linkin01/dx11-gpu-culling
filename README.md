@@ -130,7 +130,7 @@ This is a demonstration project showcasing DirectX 11 culling techniques. Feel f
 
 ## 📄 License
 
-This project is provided as-is for educational and demonstration purposes.
+MIT License
 
 ## 🔗 Links
 
