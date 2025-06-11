@@ -124,10 +124,12 @@ When distributing to other PCs, ensure these are installed:
 
 ## 📊 Performance Features
 
-- Real-time FPS monitoring
-- Object count statistics  
-- Culling efficiency metrics
-- GPU/CPU performance tracking
+- Delta time calculation for smooth frame-independent movement
+- GPU compute shader fallback to CPU culling when unsupported
+- Hardware occlusion query optimization
+- BVH spatial partitioning for efficient culling
+
+> **Note**: Advanced performance monitoring (FPS display, culling metrics) is planned for future implementation.
 
 ## 🤝 Contributing
 
