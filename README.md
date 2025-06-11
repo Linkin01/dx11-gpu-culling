@@ -15,6 +15,15 @@ A **high-performance DirectX 11 demonstration** showcasing GPU-accelerated occlu
 - **Multiple Geometric Primitives** - Colorful 3D objects for testing
 - **Optimized Rendering Pipeline** - Efficient DirectX 11 implementation
 
+## ⚠️ Important Configuration Notice
+
+**This project is specifically configured for:**
+- **Static Library Linking** (`/MT` runtime)
+- **Release x64 configuration only**
+- **DirectXTK static linking**
+
+Other configurations (Debug, x86, Dynamic linking) may require additional setup and are not currently supported out-of-the-box.
+
 ## 🎮 Controls
 
 - **F1** - First Person Mode (Walk Mode), to disable Walk Mode press F1 again. (Toggle)
