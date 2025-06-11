@@ -147,6 +147,8 @@ This is a demonstration project showcasing DirectX 11 culling techniques. Feel f
 
 MIT License
 
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party library licenses and attributions.
+
 ## 🔗 Links
 
 - [DirectX Documentation](https://docs.microsoft.com/en-us/windows/win32/directx)
