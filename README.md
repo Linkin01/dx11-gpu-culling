@@ -107,6 +107,10 @@ When distributing to other PCs, ensure these are installed:
 - Check Windows Event Viewer for crash details
 - Use DirectX Control Panel for debugging (if DirectX SDK installed)
 
+**Graphics Debugging:**
+- Tested and compatible with **NVIDIA Nsight Graphics 2025** for GPU debugging and profiling
+- DirectX 11 API calls can be captured and analyzed for performance optimization
+
 ## 🧪 Architecture
 
 ### Core Components
