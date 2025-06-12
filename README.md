@@ -9,7 +9,7 @@ A **high-performance DirectX 11 demonstration** showcasing GPU-accelerated occlu
 ## 🚀 Features
 
 - **GPU Frustum Culling** - Hardware-accelerated spatial culling using compute shaders
-- **CPU Fallback Culling** - Automatic fallback to CPU-based frustum culling when GPU compute shaders aren't supported
+- **CPU Frustum Culling** - Automatic fallback to CPU-based frustum culling when GPU compute shaders aren't supported
 - **GPU Occlusion Queries** - Hardware-accelerated visibility testing
 - **BVH Optimization** - Hierarchical bounding volume tree for efficient spatial queries
 - **FPS Camera Controls** - Smooth first-person navigation (WASD + mouse)
