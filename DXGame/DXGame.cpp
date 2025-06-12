@@ -371,7 +371,8 @@ public:
         // Process occlusion query results
         ProcessOcclusionQueries();
     }
-      void Render() {
+     
+    void Render() {
         // Clear render target and depth buffer
         const float clearColor[4] = { 0.2f, 0.3f, 0.4f, 1.0f };
         m_context->ClearRenderTargetView(m_renderTargetView.Get(), clearColor);
@@ -379,6 +380,9 @@ public:
         
         // Set render target and depth buffer
         m_context->OMSetRenderTargets(1, m_renderTargetView.GetAddressOf(), m_depthStencilView.Get());
+        
+        // Enable backface culling for proper 3D rendering
+        m_context->RSSetState(m_states->CullCounterClockwise());
         
         // Set up matrices
         Matrix view = m_camera.GetViewMatrix();
