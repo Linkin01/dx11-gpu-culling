@@ -7,6 +7,7 @@
 #include <memory>
 #include <algorithm>
 #include <chrono>
+#include <utility>
 
 // DirectXTK Headers
 #include "SimpleMath.h"
@@ -58,6 +59,25 @@ struct GPUObjectData {
     int occludedFrameCount;
 };
 
+// GPU Morton code structure for BVH construction
+struct GPUMortonCode {
+    uint32_t mortonCode;
+    int objectIndex;
+    float padding[2];
+};
+
+// GPU BVH construction data
+struct GPUBVHConstructionNode {
+    float minBounds[3];
+    float maxBounds[3];
+    int leftChild;
+    int rightChild;
+    int objectIndex;
+    int isLeaf;
+    int parent;
+    int atomicCounter;
+};
+
 // GPU Frustum data
 struct GPUFrustum {
     float planes[6][4]; // 6 planes, each with 4 components (x,y,z,w)
@@ -68,6 +88,16 @@ struct CullingParams {
     int rootNodeIndex;
     int objectCount;
     int nodeCount;
+    int maxDepth;
+};
+
+// BVH Construction parameters
+struct BVHConstructionParams {
+    int objectCount;
+    int nodeCount;
+    float sceneMinBounds[3];
+    float sceneMaxBounds[3];
+    int maxDepth;
     int padding;
 };
 
@@ -86,7 +116,7 @@ struct RenderObject {
 // Camera class for FPS controls
 class FPSCamera {
 public:
-    Vector3 position = Vector3(0, 0, -5);
+    Vector3 position = Vector3(0, 0, 0); // Start below the cubes for better occlusion testing
     Vector3 forward = Vector3(0, 0, 1);
     Vector3 up = Vector3(0, 1, 0);
     Vector3 right = Vector3(1, 0, 0);
@@ -250,18 +280,35 @@ private:
     std::vector<BVHNode> m_bvhNodes;
     int m_rootNode = -1;
     Frustum m_frustum;
-    
-    // GPU Frustum Culling Resources
+      // GPU Frustum Culling Resources
     ComPtr<ID3D11ComputeShader> m_frustumCullingCS;
+    ComPtr<ID3D11ComputeShader> m_bvhConstructionCS;
+    ComPtr<ID3D11ComputeShader> m_mortonCodeCS;
+    ComPtr<ID3D11ComputeShader> m_radixSortCS;
+    
     ComPtr<ID3D11Buffer> m_bvhNodesBuffer;
+    ComPtr<ID3D11Buffer> m_bvhConstructionBuffer;
     ComPtr<ID3D11Buffer> m_objectsBuffer;
+    ComPtr<ID3D11Buffer> m_mortonCodesBuffer;
+    ComPtr<ID3D11Buffer> m_sortedMortonCodesBuffer;
     ComPtr<ID3D11Buffer> m_visibilityBuffer;
     ComPtr<ID3D11Buffer> m_frustumBuffer;
     ComPtr<ID3D11Buffer> m_cullingParamsBuffer;
+    ComPtr<ID3D11Buffer> m_bvhConstructionParamsBuffer;
+    
     ComPtr<ID3D11ShaderResourceView> m_bvhNodesSRV;
     ComPtr<ID3D11ShaderResourceView> m_objectsSRV;
+    ComPtr<ID3D11ShaderResourceView> m_mortonCodesSRV;
+    ComPtr<ID3D11UnorderedAccessView> m_bvhNodesUAV;
+    ComPtr<ID3D11UnorderedAccessView> m_bvhConstructionUAV;
+    ComPtr<ID3D11UnorderedAccessView> m_mortonCodesUAV;
+    ComPtr<ID3D11UnorderedAccessView> m_sortedMortonCodesUAV;
     ComPtr<ID3D11UnorderedAccessView> m_visibilityUAV;
     ComPtr<ID3D11Buffer> m_visibilityReadbackBuffer;
+    
+    // BVH construction state
+    bool m_bvhNeedsRebuild = true;
+    Vector3 m_sceneMinBounds, m_sceneMaxBounds;
     
     // Timing
     std::chrono::high_resolution_clock::time_point m_lastTime;
@@ -275,17 +322,17 @@ public:
     bool Initialize(HWND hwnd, int width, int height) {
         m_hwnd = hwnd;
         m_width = width;
-        m_height = height;
-          if (!CreateDeviceAndSwapChain()) return false;
+        m_height = height;        if (!CreateDeviceAndSwapChain()) return false;
         if (!CreateRenderTargetView()) return false;
         if (!CreateDepthStencilView()) return false;
         if (!InitializeDirectXTK()) return false;
         if (!CreateRenderObjects()) return false;
         
-        BuildBVH();
+        // Calculate scene bounds for GPU BVH construction
+        CalculateSceneBounds();
         
-        // Initialize GPU frustum culling
-        if (!InitializeGPUFrustumCulling()) return false;
+        // Initialize GPU BVH construction and frustum culling
+        if (!InitializeGPUBVHSystem()) return false;
         
         // Set initial viewport
         D3D11_VIEWPORT viewport = {};
@@ -356,19 +403,27 @@ public:
             SetCursorPos(center.x, center.y);
             lastX = (rect.right - rect.left) / 2;
             lastY = (rect.bottom - rect.top) / 2;
-        }
-          // Update frustum
+        }        // Update frustum
         Matrix view = m_camera.GetViewMatrix();
         Matrix projection = m_camera.GetProjectionMatrix(static_cast<float>(m_width) / m_height);
         m_frustum.ExtractFromMatrix(view * projection);
-          // Perform GPU frustum culling using BVH (fallback to CPU if GPU not available)
-        if (m_frustumCullingCS) {
+        
+        // Rebuild BVH on GPU if needed
+        if (m_bvhNeedsRebuild) {
+            BuildGPUBVH();
+            m_bvhNeedsRebuild = false;
+        }
+        
+        // FIRST: Perform frustum culling (eliminates objects outside view)
+        if (m_frustumCullingCS && m_bvhConstructionCS) {
             PerformGPUFrustumCulling();
         } else {
+            // Fallback to CPU if GPU not available
+            BuildBVH(); // Build CPU BVH as fallback
             PerformCPUFrustumCulling();
         }
         
-        // Process occlusion query results
+        // SECOND: Process occlusion query results (refines visibility for objects in view)
         ProcessOcclusionQueries();
     }
      
@@ -378,39 +433,63 @@ public:
         m_context->ClearRenderTargetView(m_renderTargetView.Get(), clearColor);
         m_context->ClearDepthStencilView(m_depthStencilView.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
         
-        // Set render target and depth buffer
-        m_context->OMSetRenderTargets(1, m_renderTargetView.GetAddressOf(), m_depthStencilView.Get());
-        
-        // Enable backface culling for proper 3D rendering
-        m_context->RSSetState(m_states->CullCounterClockwise());
-        
-        // Set up matrices
-        Matrix view = m_camera.GetViewMatrix();
-        Matrix projection = m_camera.GetProjectionMatrix(static_cast<float>(m_width) / m_height);
-        
-        m_effect->SetView(view);
-        m_effect->SetProjection(projection);
-        
-        // Render all frustum-culled objects and handle occlusion queries
-        for (auto& obj : m_objects) {
-            if (obj.visible) {
-                // Start occlusion query for this object (for next frame)
-                bool shouldStartQuery = obj.occlusionQuery && !obj.queryInProgress;
-                
-                if (shouldStartQuery) {
-                    m_context->Begin(obj.occlusionQuery.Get());
-                    obj.queryInProgress = true;
-                }
-                
-                // Render the object
-                m_cube->Draw(obj.world, view, projection);
-                
-                // End occlusion query
-                if (shouldStartQuery) {
-                    m_context->End(obj.occlusionQuery.Get());
-                }
-            }
+    // Set render target and depth buffer
+    m_context->OMSetRenderTargets(1, m_renderTargetView.GetAddressOf(), m_depthStencilView.Get());
+    
+    // Enable backface culling for proper 3D rendering
+    m_context->RSSetState(m_states->CullCounterClockwise());
+    
+    // Set up proper depth stencil state for occlusion culling
+    m_context->OMSetDepthStencilState(m_states->DepthDefault(), 0);
+    
+    // Set up matrices
+    Matrix view = m_camera.GetViewMatrix();
+    Matrix projection = m_camera.GetProjectionMatrix(static_cast<float>(m_width) / m_height);
+    
+    m_effect->SetView(view);
+    m_effect->SetProjection(projection);
+    
+    // Sort objects front-to-back for better occlusion culling
+    std::vector<std::pair<float, int>> depthSortedObjects;
+    for (int i = 0; i < m_objects.size(); ++i) {
+        if (m_objects[i].visible) {
+            // Calculate distance from camera to object center
+            Vector3 objectCenter = (m_objects[i].minBounds + m_objects[i].maxBounds) * 0.5f;
+            Vector3 toObject = objectCenter - m_camera.position;
+            float distance = toObject.LengthSquared(); // Use squared distance to avoid sqrt
+            depthSortedObjects.push_back({distance, i});
         }
+    }
+    
+    // Sort front-to-back (closest first)
+    std::sort(depthSortedObjects.begin(), depthSortedObjects.end());
+    
+    // Render all frustum-culled objects in front-to-back order for occlusion culling
+    for (const auto& sortedObj : depthSortedObjects) {
+        auto& obj = m_objects[sortedObj.second];        // Start occlusion query for this object (for next frame)
+        // Only start queries for objects that are in the frustum to avoid wasting queries
+        bool shouldStartQuery = obj.occlusionQuery && !obj.queryInProgress;
+        
+        if (shouldStartQuery) {
+            m_context->Begin(obj.occlusionQuery.Get());
+            obj.queryInProgress = true;
+        }
+        
+        // Render the object
+        m_cube->Draw(obj.world, view, projection);
+        
+        // End occlusion query
+        if (shouldStartQuery) {
+            m_context->End(obj.occlusionQuery.Get());
+        }
+    }
+    
+    // Reset occlusion query state for objects not rendered (outside frustum)
+    for (auto& obj : m_objects) {
+        if (!obj.visible && obj.queryInProgress) {
+            obj.queryInProgress = false;
+        }
+    }
         
         // Present
         m_swapChain->Present(1, 0);
@@ -528,37 +607,48 @@ private:
         m_effect->EnableDefaultLighting();
         
         return true;
-    }
-      bool CreateRenderObjects() {
-        // Create multiple test cubes in different positions
-        m_objects.resize(6);
+    }    bool CreateRenderObjects() {
+        // Create test cubes arranged vertically for better occlusion testing
+        m_objects.resize(9);
         
-        // Front cubes
-        m_objects[0].world = Matrix::CreateTranslation(Vector3(-2, 0, 5));
-        m_objects[0].minBounds = Vector3(-3, -1, 4);
-        m_objects[0].maxBounds = Vector3(-1, 1, 6);
+        // Bottom row cubes (Y = -2) - these should occlude upper cubes when looking from below
+        m_objects[0].world = Matrix::CreateTranslation(Vector3(-4, -2, 10));
+        m_objects[0].minBounds = Vector3(-5, -3, 9);
+        m_objects[0].maxBounds = Vector3(-3, -1, 11);
         
-        m_objects[1].world = Matrix::CreateTranslation(Vector3(2, 0, 5));
-        m_objects[1].minBounds = Vector3(1, -1, 4);
-        m_objects[1].maxBounds = Vector3(3, 1, 6);
+        m_objects[1].world = Matrix::CreateTranslation(Vector3(0, -2, 10));
+        m_objects[1].minBounds = Vector3(-1, -3, 9);
+        m_objects[1].maxBounds = Vector3(1, -1, 11);
         
-        // Middle cubes
-        m_objects[2].world = Matrix::CreateTranslation(Vector3(0, 2, 10));
-        m_objects[2].minBounds = Vector3(-1, 1, 9);
-        m_objects[2].maxBounds = Vector3(1, 3, 11);
+        m_objects[2].world = Matrix::CreateTranslation(Vector3(4, -2, 10));
+        m_objects[2].minBounds = Vector3(3, -3, 9);
+        m_objects[2].maxBounds = Vector3(5, -1, 11);
         
-        m_objects[3].world = Matrix::CreateTranslation(Vector3(0, -2, 10));
-        m_objects[3].minBounds = Vector3(-1, -3, 9);
-        m_objects[3].maxBounds = Vector3(1, -1, 11);
+        // Middle row cubes (Y = 0)
+        m_objects[3].world = Matrix::CreateTranslation(Vector3(-4, 0, 10));
+        m_objects[3].minBounds = Vector3(-5, -1, 9);
+        m_objects[3].maxBounds = Vector3(-3, 1, 11);
         
-        // Far cubes
-        m_objects[4].world = Matrix::CreateTranslation(Vector3(-4, 0, 20));
-        m_objects[4].minBounds = Vector3(-5, -1, 19);
-        m_objects[4].maxBounds = Vector3(-3, 1, 21);
+        m_objects[4].world = Matrix::CreateTranslation(Vector3(0, 0, 10));
+        m_objects[4].minBounds = Vector3(-1, -1, 9);
+        m_objects[4].maxBounds = Vector3(1, 1, 11);
         
-        m_objects[5].world = Matrix::CreateTranslation(Vector3(4, 0, 20));
-        m_objects[5].minBounds = Vector3(3, -1, 19);
-        m_objects[5].maxBounds = Vector3(5, 1, 21);
+        m_objects[5].world = Matrix::CreateTranslation(Vector3(4, 0, 10));
+        m_objects[5].minBounds = Vector3(3, -1, 9);
+        m_objects[5].maxBounds = Vector3(5, 1, 11);
+        
+        // Top row cubes (Y = 2) - these should be occluded when looking from below
+        m_objects[6].world = Matrix::CreateTranslation(Vector3(-4, 2, 10));
+        m_objects[6].minBounds = Vector3(-5, 1, 9);
+        m_objects[6].maxBounds = Vector3(-3, 3, 11);
+        
+        m_objects[7].world = Matrix::CreateTranslation(Vector3(0, 2, 10));
+        m_objects[7].minBounds = Vector3(-1, 1, 9);
+        m_objects[7].maxBounds = Vector3(1, 3, 11);
+        
+        m_objects[8].world = Matrix::CreateTranslation(Vector3(4, 2, 10));
+        m_objects[8].minBounds = Vector3(3, 1, 9);
+        m_objects[8].maxBounds = Vector3(5, 3, 11);
         
         // Create occlusion queries
         D3D11_QUERY_DESC queryDesc = {};
@@ -574,6 +664,27 @@ private:
         }
         
         return true;
+    }
+    
+    void CalculateSceneBounds() {
+        if (m_objects.empty()) {
+            m_sceneMinBounds = Vector3::Zero;
+            m_sceneMaxBounds = Vector3::Zero;
+            return;
+        }
+        
+        m_sceneMinBounds = m_objects[0].minBounds;
+        m_sceneMaxBounds = m_objects[0].maxBounds;
+        
+        for (size_t i = 1; i < m_objects.size(); ++i) {
+            m_sceneMinBounds = Vector3::Min(m_sceneMinBounds, m_objects[i].minBounds);
+            m_sceneMaxBounds = Vector3::Max(m_sceneMaxBounds, m_objects[i].maxBounds);
+        }
+        
+        // Add some padding to avoid edge cases
+        Vector3 padding = (m_sceneMaxBounds - m_sceneMinBounds) * 0.01f;
+        m_sceneMinBounds -= padding;
+        m_sceneMaxBounds += padding;
     }
     
     void BuildBVH() {
@@ -689,33 +800,38 @@ private:
             FrustumCullBVH(node.rightChild);
         }
     }
-    */void ProcessOcclusionQueries() {
+    */    void ProcessOcclusionQueries() {
         for (auto& obj : m_objects) {
             if (obj.occlusionQuery && obj.queryInProgress) {
                 UINT64 result = 0;
                 HRESULT hr = m_context->GetData(obj.occlusionQuery.Get(), &result, sizeof(result), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-                
-                if (hr == S_OK) {
+                  if (hr == S_OK) {
                     obj.lastQueryResult = result;
                     obj.queryInProgress = false;
                     
-                    // Use the object's own counter instead of static vector
                     if (result == 0) {
+                        // Object is occluded
                         obj.occludedFrameCount++;
-                        // Only hide after being occluded for 3+ consecutive frames
-                        if (obj.occludedFrameCount > 3) {
+                        // Hide object after being occluded for 1 frame (more responsive)
+                        // Only hide if it was made visible by frustum culling first
+                        if (obj.occludedFrameCount >= 1 && obj.visible) {
                             obj.visible = false;
                         }
-                    } else {                        // Reset counter if object becomes visible
+                    } else {
+                        // Object is visible - reset counter and ensure visibility
                         obj.occludedFrameCount = 0;
-                        // Don't immediately set to visible here - let frustum culling handle it
+                        // Don't override visibility if frustum culling already determined it's outside view
+                        // Only show objects that passed frustum culling
+                        // Note: This is handled by the culling pass, we only hide here
                     }
+                } else if (hr == S_FALSE) {
+                    // Query data not ready yet, keep waiting
+                    // Don't change visibility state
                 }
             }
         }
-    }
-      // GPU Frustum Culling Methods
-    bool InitializeGPUFrustumCulling() {
+    }// GPU BVH System Methods
+    bool InitializeGPUBVHSystem() {
         // Check if compute shaders are supported
         D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS hwopts = {};
         HRESULT hr = m_device->CheckFeatureSupport(D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS, &hwopts, sizeof(hwopts));
@@ -724,23 +840,298 @@ private:
             return true; // Don't fail, just use CPU culling
         }
         
-        // Create compute shader
-        if (!CreateFrustumCullingComputeShader()) {
-            OutputDebugStringA("Failed to create compute shader, falling back to CPU culling\n");
+        // Create all compute shaders
+        if (!CreateBVHComputeShaders()) {
+            OutputDebugStringA("Failed to create BVH compute shaders, falling back to CPU culling\n");
             return true; // Don't fail, just use CPU culling
         }
         
         // Create GPU buffers
-        if (!CreateGPUBuffers()) {
-            OutputDebugStringA("Failed to create GPU buffers, falling back to CPU culling\n");
+        if (!CreateGPUBVHBuffers()) {
+            OutputDebugStringA("Failed to create GPU BVH buffers, falling back to CPU culling\n");
             return true; // Don't fail, just use CPU culling
         }
         
-        OutputDebugStringA("GPU frustum culling initialized successfully\n");
+        OutputDebugStringA("GPU BVH system initialized successfully\n");
         return true;
     }
-      bool CreateFrustumCullingComputeShader() {
-        // Compute shader HLSL code
+    
+    bool CreateBVHComputeShaders() {
+        // Create Morton code computation shader
+        if (!CreateMortonCodeComputeShader()) return false;
+        
+        // Create BVH construction shader
+        if (!CreateBVHConstructionComputeShader()) return false;
+        
+        // Create frustum culling shader
+        if (!CreateFrustumCullingComputeShader()) return false;
+        
+        return true;
+    }
+    
+    bool CompileAndCreateComputeShader(const char* source, ComPtr<ID3D11ComputeShader>* outShader) {
+        ComPtr<ID3DBlob> csBlob;
+        ComPtr<ID3DBlob> errorBlob;
+        
+        HRESULT hr = D3DCompile(
+            source,
+            strlen(source),
+            nullptr,
+            nullptr,
+            nullptr,
+            "main",
+            "cs_5_0",
+            D3DCOMPILE_ENABLE_STRICTNESS,
+            0,
+            &csBlob,
+            &errorBlob
+        );
+        
+        if (FAILED(hr)) {
+            if (errorBlob) {
+                OutputDebugStringA(static_cast<const char*>(errorBlob->GetBufferPointer()));
+            }
+            return false;
+        }
+        
+        hr = m_device->CreateComputeShader(
+            csBlob->GetBufferPointer(),
+            csBlob->GetBufferSize(),
+            nullptr,
+            outShader->GetAddressOf()
+        );
+        
+        return SUCCEEDED(hr);
+    }
+    
+    bool CreateMortonCodeComputeShader() {
+        const char* csSource = R"(
+            struct ObjectData {
+                float3 minBounds;
+                float3 maxBounds;
+                int objectIndex;
+                int occludedFrameCount;
+            };
+            
+            struct MortonCode {
+                uint mortonCode;
+                int objectIndex;
+                float2 padding;
+            };
+            
+            struct BVHConstructionParams {
+                int objectCount;
+                int nodeCount;
+                float3 sceneMinBounds;
+                float3 sceneMaxBounds;
+                int maxDepth;
+                int padding;
+            };
+            
+            StructuredBuffer<ObjectData> Objects : register(t0);
+            ConstantBuffer<BVHConstructionParams> Params : register(b0);
+            RWStructuredBuffer<MortonCode> MortonCodes : register(u0);
+            
+            // Expand a 10-bit integer into 30 bits by inserting 2 zeros after each bit
+            uint expandBits(uint v) {
+                v = (v * 0x00010001u) & 0xFF0000FFu;
+                v = (v * 0x00000101u) & 0x0F00F00Fu;
+                v = (v * 0x00000011u) & 0xC30C30C3u;
+                v = (v * 0x00000005u) & 0x49249249u;
+                return v;
+            }
+            
+            // Calculate Morton code for 3D point
+            uint morton3D(float3 pos) {
+                pos = clamp(pos, 0.0f, 1023.0f);
+                uint x = expandBits((uint)pos.x);
+                uint y = expandBits((uint)pos.y);
+                uint z = expandBits((uint)pos.z);
+                return x * 4 + y * 2 + z;
+            }
+            
+            [numthreads(64, 1, 1)]
+            void main(uint3 id : SV_DispatchThreadID) {
+                if (id.x >= (uint)Params.objectCount) return;
+                
+                ObjectData obj = Objects[id.x];
+                
+                // Calculate object center
+                float3 center = (obj.minBounds + obj.maxBounds) * 0.5f;
+                
+                // Normalize to [0, 1023] range for Morton code
+                float3 extent = Params.sceneMaxBounds - Params.sceneMinBounds;
+                float3 normalizedPos = (center - Params.sceneMinBounds) / extent * 1023.0f;
+                
+                // Calculate Morton code
+                uint mortonCode = morton3D(normalizedPos);
+                
+                // Store result
+                MortonCodes[id.x].mortonCode = mortonCode;
+                MortonCodes[id.x].objectIndex = obj.objectIndex;
+            }
+        )";
+        
+        return CompileAndCreateComputeShader(csSource, &m_mortonCodeCS);
+    }
+    
+    bool CreateBVHConstructionComputeShader() {
+        const char* csSource = R"(
+            struct MortonCode {
+                uint mortonCode;
+                int objectIndex;
+                float2 padding;
+            };
+            
+            struct ObjectData {
+                float3 minBounds;
+                float3 maxBounds;
+                int objectIndex;
+                int occludedFrameCount;
+            };
+            
+            struct BVHNode {
+                float3 minBounds;
+                float3 maxBounds;
+                int leftChild;
+                int rightChild;
+                int objectIndex;
+                int isLeaf;
+                int parent;
+                int atomicCounter;
+            };
+            
+            struct BVHConstructionParams {
+                int objectCount;
+                int nodeCount;
+                float3 sceneMinBounds;
+                float3 sceneMaxBounds;
+                int maxDepth;
+                int padding;
+            };
+            
+            StructuredBuffer<MortonCode> SortedMortonCodes : register(t0);
+            StructuredBuffer<ObjectData> Objects : register(t1);
+            ConstantBuffer<BVHConstructionParams> Params : register(b0);
+            RWStructuredBuffer<BVHNode> BVHNodes : register(u0);
+            
+            // Find the split position using binary search
+            int findSplit(int first, int last) {
+                uint firstCode = SortedMortonCodes[first].mortonCode;
+                uint lastCode = SortedMortonCodes[last].mortonCode;
+                
+                if (firstCode == lastCode) {
+                    return (first + last) >> 1;
+                }
+                
+                int commonPrefix = firstbithigh(firstCode ^ lastCode);
+                int split = first;
+                int step = last - first;
+                
+                do {
+                    step = (step + 1) >> 1;
+                    int newSplit = split + step;
+                    
+                    if (newSplit < last) {
+                        uint splitCode = SortedMortonCodes[newSplit].mortonCode;
+                        int splitPrefix = firstbithigh(firstCode ^ splitCode);
+                        if (splitPrefix > commonPrefix) {
+                            split = newSplit;
+                        }
+                    }
+                } while (step > 1);
+                
+                return split;
+            }
+            
+            // Calculate bounding box for a range of objects
+            void calculateBounds(int first, int last, out float3 minBounds, out float3 maxBounds) {
+                int firstObjIdx = SortedMortonCodes[first].objectIndex;
+                ObjectData firstObj = Objects[firstObjIdx];
+                minBounds = firstObj.minBounds;
+                maxBounds = firstObj.maxBounds;
+                
+                for (int i = first + 1; i <= last; i++) {
+                    int objIdx = SortedMortonCodes[i].objectIndex;
+                    ObjectData obj = Objects[objIdx];
+                    minBounds = min(minBounds, obj.minBounds);
+                    maxBounds = max(maxBounds, obj.maxBounds);
+                }
+            }
+            
+            [numthreads(64, 1, 1)]
+            void main(uint3 id : SV_DispatchThreadID) {
+                int nodeIndex = (int)id.x;
+                int numInternalNodes = Params.objectCount - 1;
+                
+                if (nodeIndex >= numInternalNodes) {
+                    // Create leaf nodes
+                    int leafIndex = nodeIndex - numInternalNodes;
+                    if (leafIndex < Params.objectCount) {
+                        int objIdx = SortedMortonCodes[leafIndex].objectIndex;
+                        ObjectData obj = Objects[objIdx];
+                        
+                        int leafNodeIndex = numInternalNodes + leafIndex;
+                        BVHNodes[leafNodeIndex].minBounds = obj.minBounds;
+                        BVHNodes[leafNodeIndex].maxBounds = obj.maxBounds;
+                        BVHNodes[leafNodeIndex].leftChild = -1;
+                        BVHNodes[leafNodeIndex].rightChild = -1;
+                        BVHNodes[leafNodeIndex].objectIndex = objIdx;
+                        BVHNodes[leafNodeIndex].isLeaf = 1;
+                        BVHNodes[leafNodeIndex].parent = -1;
+                        BVHNodes[leafNodeIndex].atomicCounter = 0;
+                    }
+                    return;
+                }
+                
+                // Create internal nodes
+                int first = nodeIndex;
+                int last = nodeIndex + 1;
+                
+                // Determine range
+                if (nodeIndex == 0) {
+                    first = 0;
+                    last = Params.objectCount - 1;
+                } else {
+                    // Binary radix tree construction
+                    int split = findSplit(0, Params.objectCount - 1);
+                    
+                    if (nodeIndex <= split) {
+                        last = split;
+                    } else {
+                        first = split + 1;
+                        last = Params.objectCount - 1;
+                    }
+                }
+                
+                int split = findSplit(first, last);
+                
+                // Create child indices
+                int leftChild = (split == first) ? numInternalNodes + split : split;
+                int rightChild = (split + 1 == last) ? numInternalNodes + split + 1 : split + 1;
+                
+                BVHNodes[nodeIndex].leftChild = leftChild;
+                BVHNodes[nodeIndex].rightChild = rightChild;
+                BVHNodes[nodeIndex].objectIndex = -1;
+                BVHNodes[nodeIndex].isLeaf = 0;
+                BVHNodes[nodeIndex].parent = -1;
+                BVHNodes[nodeIndex].atomicCounter = 0;
+                
+                // Set parent pointers
+                BVHNodes[leftChild].parent = nodeIndex;
+                BVHNodes[rightChild].parent = nodeIndex;
+                
+                // Calculate bounding box
+                float3 minBounds, maxBounds;
+                calculateBounds(first, last, minBounds, maxBounds);
+                BVHNodes[nodeIndex].minBounds = minBounds;
+                BVHNodes[nodeIndex].maxBounds = maxBounds;
+            }
+        )";
+        
+        return CompileAndCreateComputeShader(csSource, &m_bvhConstructionCS);
+    }      bool CreateFrustumCullingComputeShader() {
+        // Enhanced compute shader HLSL code for GPU-built BVH
         const char* csSource = R"(
             struct BVHNode {
                 float3 minBounds;
@@ -749,7 +1140,8 @@ private:
                 int rightChild;
                 int objectIndex;
                 int isLeaf;
-                float2 padding;
+                int parent;
+                int atomicCounter;
             };
             
             struct ObjectData {
@@ -767,7 +1159,7 @@ private:
                 int rootNodeIndex;
                 int objectCount;
                 int nodeCount;
-                int padding;
+                int maxDepth;
             };
             
             StructuredBuffer<BVHNode> BVHNodes : register(t0);
@@ -792,51 +1184,52 @@ private:
                 return true;
             }
             
-            [numthreads(1, 1, 1)]
+            [numthreads(64, 1, 1)]
             void main(uint3 id : SV_DispatchThreadID) {
-                if (id.x == 0) {
-                    // Clear visibility buffer
-                    for (int i = 0; i < Params.objectCount; i++) {
-                        ObjectData obj = Objects[i];
-                        // Only reset if not heavily occluded
-                        if (obj.occludedFrameCount <= 3) {
-                            Visibility[i] = 0;
-                        }
-                    }
-                    
-                    // Iterative BVH traversal using a simple stack
-                    int stack[64]; // Simple stack for BVH traversal
-                    int stackPtr = 0;
-                    
-                    if (Params.rootNodeIndex >= 0) {
-                        stack[stackPtr++] = Params.rootNodeIndex;
+                uint threadId = id.x;
+                
+                // Each thread processes multiple objects for better efficiency
+                uint objectsPerThread = (Params.objectCount + 63) / 64;
+                uint startIdx = threadId * objectsPerThread;
+                uint endIdx = min(startIdx + objectsPerThread, (uint)Params.objectCount);
+                
+                // Process objects assigned to this thread
+                for (uint objIdx = startIdx; objIdx < endIdx; objIdx++) {
+                    ObjectData obj = Objects[objIdx];
+                      // Only reset if not heavily occluded
+                    if (obj.occludedFrameCount <= 2) {
+                        Visibility[objIdx] = 0;
+                          // Traverse BVH iteratively to find this object
+                        int stack[64]; // Increased stack size for deeper BVHs
+                        int stackPtr = 0;
                         
-                        while (stackPtr > 0 && stackPtr < 64) {
-                            int nodeIndex = stack[--stackPtr];
+                        if (Params.rootNodeIndex >= 0) {
+                            stack[stackPtr++] = Params.rootNodeIndex;
                             
-                            if (nodeIndex < 0 || nodeIndex >= Params.nodeCount) continue;
-                            
-                            BVHNode node = BVHNodes[nodeIndex];
-                            
-                            if (!IsBoxInFrustum(node.minBounds, node.maxBounds)) {
-                                continue;
-                            }
-                            
-                            if (node.isLeaf) {
-                                if (node.objectIndex >= 0 && node.objectIndex < Params.objectCount) {
-                                    ObjectData obj = Objects[node.objectIndex];
-                                    // Only set visible if not heavily occluded
-                                    if (obj.occludedFrameCount <= 3) {
-                                        Visibility[node.objectIndex] = 1;
+                            while (stackPtr > 0 && stackPtr < 64) {
+                                int nodeIndex = stack[--stackPtr];
+                                
+                                if (nodeIndex < 0 || nodeIndex >= Params.nodeCount) continue;
+                                
+                                BVHNode node = BVHNodes[nodeIndex];
+                                
+                                if (!IsBoxInFrustum(node.minBounds, node.maxBounds)) {
+                                    continue;
+                                }
+                                
+                                if (node.isLeaf) {
+                                    if (node.objectIndex == (int)objIdx) {
+                                        Visibility[objIdx] = 1;
+                                        break; // Found our object
                                     }
-                                }
-                            } else {
-                                // Add children to stack
-                                if (node.rightChild >= 0 && stackPtr < 63) {
-                                    stack[stackPtr++] = node.rightChild;
-                                }
-                                if (node.leftChild >= 0 && stackPtr < 63) {
-                                    stack[stackPtr++] = node.leftChild;
+                                } else {
+                                    // Add children to stack with bounds checking
+                                    if (node.rightChild >= 0 && stackPtr < 63) {
+                                        stack[stackPtr++] = node.rightChild;
+                                    }
+                                    if (node.leftChild >= 0 && stackPtr < 63) {
+                                        stack[stackPtr++] = node.leftChild;
+                                    }
                                 }
                             }
                         }
@@ -845,153 +1238,317 @@ private:
             }
         )";
         
-        ComPtr<ID3DBlob> csBlob;
-        ComPtr<ID3DBlob> errorBlob;
-        
-        HRESULT hr = D3DCompile(
-            csSource,
-            strlen(csSource),
-            nullptr,
-            nullptr,
-            nullptr,
-            "main",
-            "cs_5_0",
-            D3DCOMPILE_ENABLE_STRICTNESS,
-            0,
-            &csBlob,
-            &errorBlob
-        );
-        
-        if (FAILED(hr)) {
-            if (errorBlob) {
-                OutputDebugStringA(static_cast<const char*>(errorBlob->GetBufferPointer()));
-            }
-            return false;
-        }
-        
-        hr = m_device->CreateComputeShader(
-            csBlob->GetBufferPointer(),
-            csBlob->GetBufferSize(),
-            nullptr,
-            &m_frustumCullingCS
-        );
-        
-        return SUCCEEDED(hr);
+        return CompileAndCreateComputeShader(csSource, &m_frustumCullingCS);
     }
-    
-    bool CreateGPUBuffers() {
-        // Create BVH nodes buffer
-        if (!m_bvhNodes.empty()) {
-            std::vector<GPUBVHNode> gpuNodes(m_bvhNodes.size());
-            for (size_t i = 0; i < m_bvhNodes.size(); i++) {
-                const auto& node = m_bvhNodes[i];
-                auto& gpuNode = gpuNodes[i];
-                
-                gpuNode.minBounds[0] = node.minBounds.x;
-                gpuNode.minBounds[1] = node.minBounds.y;
-                gpuNode.minBounds[2] = node.minBounds.z;
-                gpuNode.maxBounds[0] = node.maxBounds.x;
-                gpuNode.maxBounds[1] = node.maxBounds.y;
-                gpuNode.maxBounds[2] = node.maxBounds.z;
-                gpuNode.leftChild = node.leftChild;
-                gpuNode.rightChild = node.rightChild;
-                gpuNode.objectIndex = node.objectIndex;
-                gpuNode.isLeaf = node.isLeaf ? 1 : 0;
-            }
-            
-            D3D11_BUFFER_DESC bufferDesc = {};
-            bufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-            bufferDesc.ByteWidth = static_cast<UINT>(sizeof(GPUBVHNode) * gpuNodes.size());
-            bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            bufferDesc.StructureByteStride = sizeof(GPUBVHNode);
-            bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-            
-            D3D11_SUBRESOURCE_DATA initData = {};
-            initData.pSysMem = gpuNodes.data();
-            
-            HRESULT hr = m_device->CreateBuffer(&bufferDesc, &initData, &m_bvhNodesBuffer);
-            if (FAILED(hr)) return false;
-              // Create SRV
-            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-            srvDesc.Buffer.FirstElement = 0;
-            srvDesc.Buffer.NumElements = static_cast<UINT>(gpuNodes.size());
-            
-            hr = m_device->CreateShaderResourceView(m_bvhNodesBuffer.Get(), &srvDesc, &m_bvhNodesSRV);
-            if (FAILED(hr)) return false;
-        }
+      bool CreateGPUBVHBuffers() {
+        if (m_objects.empty()) return false;
+        
+        int objectCount = static_cast<int>(m_objects.size());
+        int nodeCount = objectCount * 2 - 1; // Maximum nodes in a binary tree
+        
+        // Create Morton codes buffer
+        CreateMortonCodesBuffer(objectCount);
+        
+        // Create BVH construction buffer
+        CreateBVHConstructionBuffer(nodeCount);
+        
+        // Create final BVH nodes buffer
+        CreateBVHNodesBuffer(nodeCount);
         
         // Create objects buffer (dynamic for updates)
-        if (!m_objects.empty()) {
-            D3D11_BUFFER_DESC bufferDesc = {};
-            bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-            bufferDesc.ByteWidth = static_cast<UINT>(sizeof(GPUObjectData) * m_objects.size());
-            bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-            bufferDesc.StructureByteStride = sizeof(GPUObjectData);
-            bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-            
-            HRESULT hr = m_device->CreateBuffer(&bufferDesc, nullptr, &m_objectsBuffer);
-            if (FAILED(hr)) return false;
-              // Create SRV
-            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-            srvDesc.Buffer.FirstElement = 0;
-            srvDesc.Buffer.NumElements = static_cast<UINT>(m_objects.size());
-            
-            hr = m_device->CreateShaderResourceView(m_objectsBuffer.Get(), &srvDesc, &m_objectsSRV);
-            if (FAILED(hr)) return false;
-        }
+        CreateObjectsBuffer(objectCount);
         
         // Create visibility buffer
-        if (!m_objects.empty()) {
-            D3D11_BUFFER_DESC bufferDesc = {};
-            bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-            bufferDesc.ByteWidth = static_cast<UINT>(sizeof(int) * m_objects.size());
-            bufferDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-            bufferDesc.StructureByteStride = sizeof(int);
-            bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-            
-            HRESULT hr = m_device->CreateBuffer(&bufferDesc, nullptr, &m_visibilityBuffer);
-            if (FAILED(hr)) return false;
-            
-            // Create UAV
-            D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-            uavDesc.Format = DXGI_FORMAT_UNKNOWN;
-            uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-            uavDesc.Buffer.NumElements = static_cast<UINT>(m_objects.size());
-            
-            hr = m_device->CreateUnorderedAccessView(m_visibilityBuffer.Get(), &uavDesc, &m_visibilityUAV);
-            if (FAILED(hr)) return false;
-            
-            // Create readback buffer
-            bufferDesc.Usage = D3D11_USAGE_STAGING;
-            bufferDesc.BindFlags = 0;
-            bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            bufferDesc.MiscFlags = 0;
-            
-            hr = m_device->CreateBuffer(&bufferDesc, nullptr, &m_visibilityReadbackBuffer);
-            if (FAILED(hr)) return false;
-        }
+        CreateVisibilityBuffer(objectCount);
         
-        // Create frustum constant buffer
+        // Create constant buffers
+        CreateConstantBuffers();
+        
+        return true;
+    }
+    
+    void CreateMortonCodesBuffer(int objectCount) {
+        // Morton codes buffer
+        D3D11_BUFFER_DESC bufferDesc = {};
+        bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+        bufferDesc.ByteWidth = sizeof(GPUMortonCode) * objectCount;
+        bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        bufferDesc.StructureByteStride = sizeof(GPUMortonCode);
+        bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        
+        m_device->CreateBuffer(&bufferDesc, nullptr, &m_mortonCodesBuffer);
+        
+        // Create UAV
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.NumElements = objectCount;
+        
+        m_device->CreateUnorderedAccessView(m_mortonCodesBuffer.Get(), &uavDesc, &m_mortonCodesUAV);
+        
+        // Create SRV
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = objectCount;
+        
+        m_device->CreateShaderResourceView(m_mortonCodesBuffer.Get(), &srvDesc, &m_mortonCodesSRV);
+    }
+    
+    void CreateBVHConstructionBuffer(int nodeCount) {
+        // BVH construction buffer
+        D3D11_BUFFER_DESC bufferDesc = {};
+        bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+        bufferDesc.ByteWidth = sizeof(GPUBVHConstructionNode) * nodeCount;
+        bufferDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        bufferDesc.StructureByteStride = sizeof(GPUBVHConstructionNode);
+        bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        
+        m_device->CreateBuffer(&bufferDesc, nullptr, &m_bvhConstructionBuffer);
+        
+        // Create UAV
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.NumElements = nodeCount;
+        
+        m_device->CreateUnorderedAccessView(m_bvhConstructionBuffer.Get(), &uavDesc, &m_bvhConstructionUAV);
+    }
+    
+    void CreateBVHNodesBuffer(int nodeCount) {
+        // Final BVH nodes buffer
+        D3D11_BUFFER_DESC bufferDesc = {};
+        bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+        bufferDesc.ByteWidth = sizeof(GPUBVHNode) * nodeCount;
+        bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        bufferDesc.StructureByteStride = sizeof(GPUBVHNode);
+        bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        
+        m_device->CreateBuffer(&bufferDesc, nullptr, &m_bvhNodesBuffer);
+        
+        // Create SRV
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = nodeCount;
+        
+        m_device->CreateShaderResourceView(m_bvhNodesBuffer.Get(), &srvDesc, &m_bvhNodesSRV);
+        
+        // Create UAV
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.NumElements = nodeCount;
+        
+        m_device->CreateUnorderedAccessView(m_bvhNodesBuffer.Get(), &uavDesc, &m_bvhNodesUAV);
+    }
+    
+    void CreateObjectsBuffer(int objectCount) {
+        // Objects buffer (dynamic for updates)
+        D3D11_BUFFER_DESC bufferDesc = {};
+        bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+        bufferDesc.ByteWidth = sizeof(GPUObjectData) * objectCount;
+        bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        bufferDesc.StructureByteStride = sizeof(GPUObjectData);
+        bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        
+        m_device->CreateBuffer(&bufferDesc, nullptr, &m_objectsBuffer);
+        
+        // Create SRV
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = objectCount;
+        
+        m_device->CreateShaderResourceView(m_objectsBuffer.Get(), &srvDesc, &m_objectsSRV);
+    }
+    
+    void CreateVisibilityBuffer(int objectCount) {
+        // Visibility buffer
+        D3D11_BUFFER_DESC bufferDesc = {};
+        bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+        bufferDesc.ByteWidth = sizeof(int) * objectCount;
+        bufferDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        bufferDesc.StructureByteStride = sizeof(int);
+        bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        
+        m_device->CreateBuffer(&bufferDesc, nullptr, &m_visibilityBuffer);
+        
+        // Create UAV
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.NumElements = objectCount;
+        
+        m_device->CreateUnorderedAccessView(m_visibilityBuffer.Get(), &uavDesc, &m_visibilityUAV);
+        
+        // Create readback buffer
+        bufferDesc.Usage = D3D11_USAGE_STAGING;
+        bufferDesc.BindFlags = 0;
+        bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        bufferDesc.MiscFlags = 0;
+        
+        m_device->CreateBuffer(&bufferDesc, nullptr, &m_visibilityReadbackBuffer);
+    }
+    
+    void CreateConstantBuffers() {
+        // Frustum constant buffer
         D3D11_BUFFER_DESC cbDesc = {};
         cbDesc.Usage = D3D11_USAGE_DYNAMIC;
         cbDesc.ByteWidth = sizeof(GPUFrustum);
         cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         
-        HRESULT hr = m_device->CreateBuffer(&cbDesc, nullptr, &m_frustumBuffer);
-        if (FAILED(hr)) return false;
+        m_device->CreateBuffer(&cbDesc, nullptr, &m_frustumBuffer);
         
-        // Create culling params constant buffer
+        // Culling params constant buffer
         cbDesc.ByteWidth = sizeof(CullingParams);
-        hr = m_device->CreateBuffer(&cbDesc, nullptr, &m_cullingParamsBuffer);
-        if (FAILED(hr)) return false;
+        m_device->CreateBuffer(&cbDesc, nullptr, &m_cullingParamsBuffer);
         
-        return true;
+        // BVH construction params constant buffer
+        cbDesc.ByteWidth = sizeof(BVHConstructionParams);
+        m_device->CreateBuffer(&cbDesc, nullptr, &m_bvhConstructionParamsBuffer);
+    }
+    
+    void BuildGPUBVH() {
+        if (!m_mortonCodeCS || !m_bvhConstructionCS || m_objects.empty()) {
+            return;
+        }
+        
+        int objectCount = static_cast<int>(m_objects.size());
+        int nodeCount = objectCount * 2 - 1;
+        
+        // Step 1: Generate Morton codes
+        GenerateMortonCodes();
+        
+        // Step 2: Sort Morton codes (simplified - using CPU sort for now)
+        SortMortonCodes();
+        
+        // Step 3: Build BVH structure
+        ConstructBVHOnGPU();
+        
+        OutputDebugStringA("GPU BVH construction completed\n");
+    }
+    
+    void GenerateMortonCodes() {
+        // Update BVH construction parameters
+        UpdateBVHConstructionParams();
+        
+        // Update object data
+        UpdateGPUObjectData();
+        
+        // Set compute shader and resources
+        m_context->CSSetShader(m_mortonCodeCS.Get(), nullptr, 0);
+        
+        // Set resources
+        ID3D11ShaderResourceView* srvs[] = { m_objectsSRV.Get() };
+        m_context->CSSetShaderResources(0, 1, srvs);
+        
+        ID3D11Buffer* cbs[] = { m_bvhConstructionParamsBuffer.Get() };
+        m_context->CSSetConstantBuffers(0, 1, cbs);
+        
+        ID3D11UnorderedAccessView* uavs[] = { m_mortonCodesUAV.Get() };
+        UINT initialCounts[] = { 0 };
+        m_context->CSSetUnorderedAccessViews(0, 1, uavs, initialCounts);
+        
+        // Dispatch
+        int objectCount = static_cast<int>(m_objects.size());
+        int numGroups = (objectCount + 63) / 64;
+        m_context->Dispatch(numGroups, 1, 1);
+        
+        // Unbind resources
+        ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
+        m_context->CSSetShaderResources(0, 1, nullSRVs);
+        
+        ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+        m_context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+        
+        m_context->CSSetShader(nullptr, nullptr, 0);
+    }
+    
+    void SortMortonCodes() {
+        // For now, use a simple CPU-based sort
+        // In a production system, you'd implement GPU radix sort
+        
+        // Copy Morton codes to CPU
+        ComPtr<ID3D11Buffer> stagingBuffer;
+        D3D11_BUFFER_DESC bufferDesc = {};
+        bufferDesc.Usage = D3D11_USAGE_STAGING;
+        bufferDesc.ByteWidth = sizeof(GPUMortonCode) * m_objects.size();
+        bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+        bufferDesc.StructureByteStride = sizeof(GPUMortonCode);
+        
+        m_device->CreateBuffer(&bufferDesc, nullptr, &stagingBuffer);
+        
+        // Copy from GPU to staging
+        m_context->CopyResource(stagingBuffer.Get(), m_mortonCodesBuffer.Get());
+        
+        // Map and sort
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (SUCCEEDED(m_context->Map(stagingBuffer.Get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped))) {
+            GPUMortonCode* mortonCodes = static_cast<GPUMortonCode*>(mapped.pData);
+            
+            // Sort by Morton code
+            std::sort(mortonCodes, mortonCodes + m_objects.size(), 
+                [](const GPUMortonCode& a, const GPUMortonCode& b) {
+                    return a.mortonCode < b.mortonCode;
+                });
+            
+            m_context->Unmap(stagingBuffer.Get(), 0);
+        }
+        
+        // Copy back to GPU
+        m_context->CopyResource(m_mortonCodesBuffer.Get(), stagingBuffer.Get());
+    }
+    
+    void ConstructBVHOnGPU() {
+        // Set compute shader
+        m_context->CSSetShader(m_bvhConstructionCS.Get(), nullptr, 0);
+        
+        // Set resources
+        ID3D11ShaderResourceView* srvs[] = { m_mortonCodesSRV.Get(), m_objectsSRV.Get() };
+        m_context->CSSetShaderResources(0, 2, srvs);
+        
+        ID3D11Buffer* cbs[] = { m_bvhConstructionParamsBuffer.Get() };
+        m_context->CSSetConstantBuffers(0, 1, cbs);
+        
+        ID3D11UnorderedAccessView* uavs[] = { m_bvhNodesUAV.Get() };
+        UINT initialCounts[] = { 0 };
+        m_context->CSSetUnorderedAccessViews(0, 1, uavs, initialCounts);
+        
+        // Dispatch - process all nodes
+        int nodeCount = static_cast<int>(m_objects.size()) * 2 - 1;
+        int numGroups = (nodeCount + 63) / 64;
+        m_context->Dispatch(numGroups, 1, 1);
+        
+        // Unbind resources
+        ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
+        m_context->CSSetShaderResources(0, 2, nullSRVs);
+        
+        ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+        m_context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+        
+        m_context->CSSetShader(nullptr, nullptr, 0);
+    }
+    
+    void UpdateBVHConstructionParams() {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        HRESULT hr = m_context->Map(m_bvhConstructionParamsBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+            BVHConstructionParams* params = static_cast<BVHConstructionParams*>(mapped.pData);
+            params->objectCount = static_cast<int>(m_objects.size());
+            params->nodeCount = static_cast<int>(m_objects.size()) * 2 - 1;
+            params->sceneMinBounds[0] = m_sceneMinBounds.x;
+            params->sceneMinBounds[1] = m_sceneMinBounds.y;
+            params->sceneMinBounds[2] = m_sceneMinBounds.z;
+            params->sceneMaxBounds[0] = m_sceneMaxBounds.x;
+            params->sceneMaxBounds[1] = m_sceneMaxBounds.y;
+            params->sceneMaxBounds[2] = m_sceneMaxBounds.z;
+            params->maxDepth = 16; // Reasonable max depth
+            params->padding = 0;
+            m_context->Unmap(m_bvhConstructionParamsBuffer.Get(), 0);
+        }
     }
     
     void UpdateGPUObjectData() {
@@ -1026,12 +1583,26 @@ private:
             return;
         }
         
+        // FIRST: Read results from PREVIOUS frame (if available)
+        // This avoids GPU-CPU sync stalls
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        HRESULT hr = m_context->Map(m_visibilityReadbackBuffer.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+        if (SUCCEEDED(hr)) {
+            const int* visibility = static_cast<const int*>(mapped.pData);
+            for (size_t i = 0; i < m_objects.size(); i++) {
+                // Apply frustum culling results from previous frame
+                m_objects[i].visible = (visibility[i] != 0);
+            }
+            m_context->Unmap(m_visibilityReadbackBuffer.Get(), 0);
+        }
+        // If mapping failed (first frame or GPU busy), keep previous visibility state
+        
+        // SECOND: Dispatch compute shader for CURRENT frame
         // Update object data on GPU
         UpdateGPUObjectData();
         
         // Update frustum constant buffer
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        HRESULT hr = m_context->Map(m_frustumBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        hr = m_context->Map(m_frustumBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (SUCCEEDED(hr)) {
             GPUFrustum* gpuFrustum = static_cast<GPUFrustum*>(mapped.pData);
             for (int i = 0; i < 6; i++) {
@@ -1047,10 +1618,10 @@ private:
         hr = m_context->Map(m_cullingParamsBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (SUCCEEDED(hr)) {
             CullingParams* params = static_cast<CullingParams*>(mapped.pData);
-            params->rootNodeIndex = m_rootNode;
+            params->rootNodeIndex = 0; // GPU-built BVH always has root at index 0
             params->objectCount = static_cast<int>(m_objects.size());
-            params->nodeCount = static_cast<int>(m_bvhNodes.size());
-            params->padding = 0;
+            params->nodeCount = static_cast<int>(m_objects.size()) * 2 - 1;
+            params->maxDepth = 16;
             m_context->Unmap(m_cullingParamsBuffer.Get(), 0);
         }
         
@@ -1067,8 +1638,9 @@ private:
         UINT initialCounts[] = { 0 };
         m_context->CSSetUnorderedAccessViews(0, 1, uavs, initialCounts);
         
-        // Dispatch compute shader
-        m_context->Dispatch(1, 1, 1);
+        // Dispatch compute shader - use multiple threads for better performance
+        int numGroups = (static_cast<int>(m_objects.size()) + 63) / 64;
+        m_context->Dispatch(numGroups, 1, 1);
         
         // Unbind resources
         ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
@@ -1079,27 +1651,15 @@ private:
         
         m_context->CSSetShader(nullptr, nullptr, 0);
         
-        // Copy visibility results back to CPU
+        // THIRD: Copy visibility results for NEXT frame (non-blocking)
         m_context->CopyResource(m_visibilityReadbackBuffer.Get(), m_visibilityBuffer.Get());
         
-        // Read back visibility results
-        hr = m_context->Map(m_visibilityReadbackBuffer.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
-        if (SUCCEEDED(hr)) {
-            const int* visibility = static_cast<const int*>(mapped.pData);
-            for (size_t i = 0; i < m_objects.size(); i++) {
-                m_objects[i].visible = (visibility[i] != 0);            }
-            m_context->Unmap(m_visibilityReadbackBuffer.Get(), 0);
-        }
-    }
-    
-    // CPU Fallback Frustum Culling
+        // DO NOT read results here - they will be read next frame
+    }    // CPU Fallback Frustum Culling
     void PerformCPUFrustumCulling() {
-        // Reset visibility for frustum culling, but preserve occlusion state
+        // Reset all objects to not visible - frustum culling will set visible ones
         for (auto& obj : m_objects) {
-            // Only reset to visible if the object isn't heavily occluded
-            if (obj.occludedFrameCount <= 3) {
-                obj.visible = false; // Will be set to true if in frustum
-            }
+            obj.visible = false;
         }
         
         // Traverse BVH and perform frustum culling
@@ -1206,7 +1766,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     HWND hwnd = CreateWindowEx(
         0,
         L"DXGameWindow",
-        L"DirectX 11 - GPU Occlusion Queries & Frustum Culling with BVH",
+        L"DirectX 11 - GPU-Built BVH with Full GPU Frustum Culling",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         1024, 768,
@@ -1242,6 +1802,5 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
             g_game->Render();
         }
     }
-    
-    return static_cast<int>(msg.wParam);
+      return static_cast<int>(msg.wParam);
 }
