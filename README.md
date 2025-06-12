@@ -8,8 +8,10 @@ A **high-performance DirectX 11 demonstration** showcasing GPU-accelerated occlu
 
 ## 🚀 Features
 
+- **GPU Frustum Culling** - Hardware-accelerated spatial culling using compute shaders
+- **CPU Fallback Culling** - Automatic fallback to CPU-based frustum culling when GPU compute shaders aren't supported
 - **GPU Occlusion Queries** - Hardware-accelerated visibility testing
-- **Frustum Culling with BVH** - Hierarchical bounding volume optimization
+- **BVH Optimization** - Hierarchical bounding volume tree for efficient spatial queries
 - **FPS Camera Controls** - Smooth first-person navigation (WASD + mouse)
 - **Performance Metrics** - Real-time rendering statistics
 - **Multiple Geometric Primitives** - Colorful 3D objects for testing
@@ -36,15 +38,18 @@ Other configurations (Debug, x86, Dynamic linking) may require additional setup 
 ### Rendering Features
 - **DirectX 11.1** with fallback support (11.0, 10.1, 10.0)
 - **DirectXTK** integration for enhanced graphics capabilities
-- **BVH (Bounding Volume Hierarchy)** for spatial partitioning
+- **GPU Compute Shader Culling** - DirectX 11 compute shader-based frustum culling with BVH traversal
+- **CPU Fallback Culling** - Automatic fallback to CPU-based frustum culling when compute shaders aren't available
+- **BVH (Bounding Volume Hierarchy)** for efficient spatial partitioning and hierarchical queries
 - **Hardware occlusion queries** for visibility optimization
-- **Frustum culling** to eliminate off-screen objects
+- **Dual-layer visibility testing** - Combines frustum culling with occlusion query results
 
 ### Performance Optimizations
 - Static linking configuration (`/MT`) for reduced dependencies
 - WARP fallback for software rendering compatibility
 - Debug layer support in debug builds only
-- Optimized object culling algorithms
+- GPU-accelerated spatial culling with CPU fallback for maximum compatibility
+- Intelligent occlusion query management with frame-based visibility persistence
 
 ## 📋 System Requirements
 
@@ -114,17 +119,24 @@ When distributing to other PCs, ensure these are installed:
 ## 🧪 Architecture
 
 ### Core Components
-- **FPSCamera** - First-person camera implementation
-- **BVHNode** - Bounding volume hierarchy structure
-- **RenderObject** - Renderable entity with culling data
-- **Frustum** - View frustum mathematics for culling
-- **GPU Culling Shaders** - Compute-based culling operations
+- **FPSCamera** - First-person camera implementation with smooth movement
+- **BVHNode & GPUBVHNode** - Bounding volume hierarchy structures for CPU and GPU
+- **RenderObject** - Renderable entity with culling and occlusion data
+- **Frustum** - View frustum mathematics and plane extraction
+- **GPU Compute Shaders** - DirectX 11 compute shader for parallel BVH traversal
+- **CPU Fallback System** - Traditional recursive BVH traversal implementation
 
 ### Culling Pipeline
-1. **Frustum Culling** - Eliminate objects outside view
-2. **BVH Traversal** - Hierarchical spatial queries
-3. **Occlusion Queries** - GPU-based visibility testing
-4. **Render Queue** - Optimized object submission
+1. **Hardware Detection** - Check compute shader support and initialize appropriate culling method
+2. **GPU Frustum Culling** (Primary):
+   - Upload BVH and object data to GPU buffers
+   - Execute compute shader with parallel BVH traversal
+   - Read back visibility results asynchronously
+3. **CPU Fallback Culling** (When GPU unavailable):
+   - Recursive BVH traversal on CPU
+   - Direct visibility updates in main thread
+4. **Occlusion Queries** - GPU-based visibility testing with multi-frame persistence
+5. **Render Queue** - Submit only visible objects for rendering
 
 ## 📊 Performance Features
 
