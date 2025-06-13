@@ -13,10 +13,98 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Shader Files">
+      <UniqueIdentifier>{E12C6187-8E19-4E76-87B4-FF10F6E58542}</UniqueIdentifier>
+      <Extensions>hlsl;fx;fxh;shader</Extensions>
+    </Filter>
+    <Filter Include="Documentation">
+      <UniqueIdentifier>{F8E7E471-2F9F-4B33-8B91-C5F8E9A1A2E3}</UniqueIdentifier>
+      <Extensions>md;txt;doc</Extensions>
+    </Filter>
+    <Filter Include="Core">
+      <UniqueIdentifier>{B8E7E471-2F9F-4B33-8B91-C5F8E9A1A2E4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="BVH Systems">
+      <UniqueIdentifier>{C8E7E471-2F9F-4B33-8B91-C5F8E9A1A2E5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game Logic">
+      <UniqueIdentifier>{D8E7E471-2F9F-4B33-8B91-C5F8E9A1A2E6}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
+  
+  <!-- Header Files -->
   <ItemGroup>
-    <ClCompile Include="DXGame.cpp">
+    <ClInclude Include="Common.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Structures.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera.h">
+      <Filter>Game Logic</Filter>
+    </ClInclude>
+    <ClInclude Include="GPUBVHSystem.h">
+      <Filter>BVH Systems</Filter>
+    </ClInclude>
+    <ClInclude Include="CPUBVHSystem.h">
+      <Filter>BVH Systems</Filter>
+    </ClInclude>
+    <ClInclude Include="DXGame.h">
+      <Filter>Game Logic</Filter>
+    </ClInclude>
+  </ItemGroup>
+  
+  <!-- Source Files -->
+  <ItemGroup>
+    <ClCompile Include="Structures.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Camera.cpp">
+      <Filter>Game Logic</Filter>
+    </ClCompile>
+    <ClCompile Include="GPUBVHSystem.cpp">
+      <Filter>BVH Systems</Filter>
+    </ClCompile>
+    <ClCompile Include="GPUBVHShaders.cpp">
+      <Filter>BVH Systems</Filter>
+    </ClCompile>
+    <ClCompile Include="CPUBVHSystem.cpp">
+      <Filter>BVH Systems</Filter>
+    </ClCompile>
+    <ClCompile Include="DXGameCore.cpp">
+      <Filter>Game Logic</Filter>
+    </ClCompile>
+    <ClCompile Include="DXGameUpdate.cpp">
+      <Filter>Game Logic</Filter>
+    </ClCompile>
+    <ClCompile Include="DXGameRender.cpp">
+      <Filter>Game Logic</Filter>
+    </ClCompile>
+    <ClCompile Include="Main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+  </ItemGroup>
+  
+  <!-- Shader Files -->
+  <ItemGroup>
+    <None Include="..\GPUBVHShaders.hlsl">
+      <Filter>Shader Files</Filter>
+    </None>
+  </ItemGroup>
+  
+  <!-- Documentation -->
+  <ItemGroup>
+    <None Include="..\README.md">
+      <Filter>Documentation</Filter>
+    </None>
+    <None Include="..\README_CLEAN.md">
+      <Filter>Documentation</Filter>
+    </None>
+    <None Include="..\LICENSE">
+      <Filter>Documentation</Filter>
+    </None>
+    <None Include="..\THIRD_PARTY_NOTICES.md">
+      <Filter>Documentation</Filter>
+    </None>
   </ItemGroup>
 </Project>

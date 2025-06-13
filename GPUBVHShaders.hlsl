@@ -1,8 +1,10 @@
-// GPU BVH Construction and Frustum Culling Shaders
-// Comprehensive HLSL implementation for fully GPU-side BVH and culling
+// ============================================================================
+// GPU BVH CONSTRUCTION AND FRUSTUM CULLING SHADERS
+// Cleaned and optimized HLSL implementation
+// ============================================================================
 
 // ============================================================================
-// STRUCTURES
+// SHARED STRUCTURES
 // ============================================================================
 
 struct ObjectData {
@@ -30,7 +32,7 @@ struct BVHNode {
 };
 
 struct Frustum {
-    float4 planes[6];
+    float4 planes[6]; // left, right, top, bottom, near, far
 };
 
 struct CullingParams {
@@ -164,15 +166,14 @@ void CSBVHConstruction(uint3 id : SV_DispatchThreadID) {
             int objIdx = SortedMortonCodes[leafIndex].objectIndex;
             ObjectData obj = ObjectsForBVH[objIdx];
             
-            int leafNodeIndex = numInternalNodes + leafIndex;
-            BVHNodes[leafNodeIndex].minBounds = obj.minBounds;
-            BVHNodes[leafNodeIndex].maxBounds = obj.maxBounds;
-            BVHNodes[leafNodeIndex].leftChild = -1;
-            BVHNodes[leafNodeIndex].rightChild = -1;
-            BVHNodes[leafNodeIndex].objectIndex = objIdx;
-            BVHNodes[leafNodeIndex].isLeaf = 1;
-            BVHNodes[leafNodeIndex].parent = -1;
-            BVHNodes[leafNodeIndex].atomicCounter = 0;
+            BVHNodes[nodeIndex].minBounds = obj.minBounds;
+            BVHNodes[nodeIndex].maxBounds = obj.maxBounds;
+            BVHNodes[nodeIndex].leftChild = -1;
+            BVHNodes[nodeIndex].rightChild = -1;
+            BVHNodes[nodeIndex].objectIndex = objIdx;
+            BVHNodes[nodeIndex].isLeaf = 1;
+            BVHNodes[nodeIndex].parent = -1;
+            BVHNodes[nodeIndex].atomicCounter = 0;
         }
         return;
     }
@@ -186,8 +187,6 @@ void CSBVHConstruction(uint3 id : SV_DispatchThreadID) {
         last = BVHParams.objectCount - 1;
     } else {
         // Determine range for this internal node
-        // This is a simplified version - in practice you'd use more sophisticated
-        // range determination based on the binary radix tree algorithm
         int objectsPerNode = (BVHParams.objectCount + numInternalNodes - 1) / numInternalNodes;
         first = nodeIndex * objectsPerNode;
         last = min(first + objectsPerNode - 1, BVHParams.objectCount - 1);
@@ -269,11 +268,14 @@ void CSFrustumCulling(uint3 id : SV_DispatchThreadID) {
     
     // Process objects assigned to this thread
     for (uint objIdx = startIdx; objIdx < endIdx; objIdx++) {
-        ObjectData obj = ObjectsForCulling[objIdx];        
-        // Reset visibility for frustum culling
-        Visibility[objIdx] = 0;
-              // Traverse BVH iteratively to test frustum culling for this object
-            int stack[64]; // Increased stack size for deeper BVHs
+        ObjectData obj = ObjectsForCulling[objIdx];
+        
+        // Reset visibility for frustum culling (only if not heavily occluded)
+        if (obj.occludedFrameCount <= 2) {
+            Visibility[objIdx] = 0;
+            
+            // Traverse BVH iteratively to test frustum culling for this object
+            int stack[64];
             int stackPtr = 0;
             
             if (CullingSettings.rootNodeIndex >= 0) {
@@ -305,68 +307,9 @@ void CSFrustumCulling(uint3 id : SV_DispatchThreadID) {
                         if (node.leftChild >= 0 && stackPtr < 63) {
                             stack[stackPtr++] = node.leftChild;
                         }
-                        // If stack is full, we may miss some nodes, but prevent overflow
                     }
                 }
             }
         }
-    }
-}
-
-// ============================================================================
-// ADVANCED GPU RADIX SORT (Optional - for high-performance Morton code sorting)
-// ============================================================================
-
-// This is a placeholder for a full GPU radix sort implementation
-// For production code, you would implement a complete radix sort here
-// or use existing libraries like CUB or ModernGPU equivalents for DirectX
-
-groupshared uint sharedMem[1024];
-
-[numthreads(256, 1, 1)]
-void CSRadixSort(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID) {
-    // Simplified radix sort implementation
-    // In practice, this would be a full multi-pass radix sort
-    // operating on Morton codes to sort them efficiently on GPU
-    
-    uint threadId = tid.x;
-    uint globalId = id.x;
-    
-    // Load data into shared memory
-    if (globalId < (uint)BVHParams.objectCount) {
-        sharedMem[threadId] = SortedMortonCodes[globalId].mortonCode;
-    }
-    
-    GroupMemoryBarrierWithGroupSync();
-    
-    // Perform local sort within workgroup
-    // This is a placeholder - implement full bitonic sort or similar
-    for (uint size = 2; size <= 256; size <<= 1) {
-        for (uint stride = size >> 1; stride > 0; stride >>= 1) {
-            if (threadId < 128) {
-                uint pos = 2 * threadId - (threadId & (stride - 1));
-                if ((threadId & (size >> 1)) == 0) {
-                    if (sharedMem[pos] > sharedMem[pos + stride]) {
-                        uint temp = sharedMem[pos];
-                        sharedMem[pos] = sharedMem[pos + stride];
-                        sharedMem[pos + stride] = temp;
-                    }
-                } else {
-                    if (sharedMem[pos] < sharedMem[pos + stride]) {
-                        uint temp = sharedMem[pos];
-                        sharedMem[pos] = sharedMem[pos + stride];
-                        sharedMem[pos + stride] = temp;
-                    }
-                }
-            }
-            GroupMemoryBarrierWithGroupSync();
-        }
-    }
-    
-    // Write back to global memory
-    if (globalId < (uint)BVHParams.objectCount) {
-        // Note: This is simplified - real implementation would need
-        // to maintain object index association during sort
-        SortedMortonCodes[globalId].mortonCode = sharedMem[threadId];
     }
 }

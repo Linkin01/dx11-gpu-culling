@@ -73,12 +73,12 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>G:\Projects\Projects\ased\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>G:\Projects\Projects\ased\libraries\DirectXTK\Bin\Desktop_2022\Win32\Debug\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>..\libraries\DirectXTK\Bin\Desktop_2022\Win32\Debug\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -88,12 +88,12 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>G:\Projects\Projects\ased\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>G:\Projects\Projects\ased\libraries\DirectXTK\Bin\Desktop_2022\Win32\Release\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>..\libraries\DirectXTK\Bin\Desktop_2022\Win32\Release\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
@@ -103,12 +103,12 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>G:\Projects\Projects\ased\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>G:\Projects\Projects\ased\libraries\DirectXTK\Bin\Desktop_2022\x64\Debug\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>..\libraries\DirectXTK\Bin\Desktop_2022\x64\Debug\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -118,7 +118,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>G:\Projects\Projects\ased\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\libraries\DirectXTK\Inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -128,12 +128,37 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>      <AdditionalDependencies>G:\Projects\Projects\ased\libraries\DirectXTK\Bin\Desktop_2022\x64\Release\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>      <AdditionalDependencies>..\libraries\DirectXTK\Bin\Desktop_2022\x64\Release\DirectXTK.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;kernel32.lib;gdi32.lib;winmm.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>  </ItemDefinitionGroup>
-  <ItemGroup>
-    <ClCompile Include="DXGame.cpp" />
+  <ItemGroup Label="Header Files">
+    <ClInclude Include="Common.h" />
+    <ClInclude Include="Structures.h" />
+    <ClInclude Include="Camera.h" />
+    <ClInclude Include="GPUBVHSystem.h" />
+    <ClInclude Include="CPUBVHSystem.h" />
+    <ClInclude Include="DXGame.h" />
+  </ItemGroup>
+  <ItemGroup Label="Source Files">
+    <ClCompile Include="Structures.cpp" />
+    <ClCompile Include="Camera.cpp" />
+    <ClCompile Include="GPUBVHSystem.cpp" />
+    <ClCompile Include="GPUBVHShaders.cpp" />
+    <ClCompile Include="CPUBVHSystem.cpp" />
+    <ClCompile Include="DXGameCore.cpp" />
+    <ClCompile Include="DXGameUpdate.cpp" />
+    <ClCompile Include="DXGameRender.cpp" />
+    <ClCompile Include="Main.cpp" />
+  </ItemGroup>
+  <ItemGroup Label="Shader Files">
+    <None Include="..\GPUBVHShaders.hlsl" />
+  </ItemGroup>
+  <ItemGroup Label="Documentation">
+    <None Include="..\README.md" />
+    <None Include="..\README_CLEAN.md" />
+    <None Include="..\LICENSE" />
+    <None Include="..\THIRD_PARTY_NOTICES.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
