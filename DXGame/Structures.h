@@ -8,21 +8,21 @@
 
 // GPU-aligned BVH Node for compute shaders
 struct GPUBVHNode {
-    float minBounds[3];
-    float maxBounds[3];
+    float minBounds[4];      // Use float4 for alignment
+    float maxBounds[4];      // Use float4 for alignment  
     int leftChild;
     int rightChild;
     int objectIndex;
     int isLeaf;
-    float padding[2]; // Ensure 16-byte alignment
 };
 
 // GPU-aligned Object data for compute shaders
 struct GPUObjectData {
-    float minBounds[3];
-    float maxBounds[3];
+    float minBounds[4];      // Use float4 for alignment
+    float maxBounds[4];      // Use float4 for alignment
     int objectIndex;
     int occludedFrameCount;
+    int padding[2];          // Pad to 16-byte boundary
 };
 
 // GPU Morton code structure for BVH construction
@@ -34,14 +34,12 @@ struct GPUMortonCode {
 
 // GPU BVH construction data
 struct GPUBVHConstructionNode {
-    float minBounds[3];
-    float maxBounds[3];
+    float minBounds[4];      // Use float4 for alignment
+    float maxBounds[4];      // Use float4 for alignment
     int leftChild;
     int rightChild;
     int objectIndex;
     int isLeaf;
-    int parent;
-    int atomicCounter;
 };
 
 // GPU Frustum data
@@ -95,6 +93,30 @@ struct RenderObject {
     UINT64 lastQueryResult = 0;
     bool queryInProgress = false;
     int occludedFrameCount = 0;  // Track consecutive occluded frames
+    
+    // Dynamic object support
+    bool isDynamic = false;
+    Vector3 velocity = Vector3::Zero;
+    Vector3 previousPosition = Vector3::Zero;
+    float movementDistance = 0.0f;
+    Vector3 baseSize = Vector3(1.0f, 1.0f, 1.0f);  // Object's base dimensions
+    
+    // Animation support
+    float animationTime = 0.0f;
+    Vector3 animationCenter = Vector3::Zero;
+    float animationRadius = 0.0f;
+    
+    // Helper methods
+    Vector3 GetPosition() const {
+        return Vector3(world._41, world._42, world._43);
+    }
+    
+    void UpdateBounds() {
+        Vector3 position = GetPosition();
+        Vector3 halfSize = baseSize * 0.5f;
+        minBounds = position - halfSize;
+        maxBounds = position + halfSize;
+    }
 };
 
 // Frustum structure for culling (CPU version)

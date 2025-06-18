@@ -70,19 +70,21 @@ private:
     bool InitializeDirectXTK();
     bool CreateRenderObjects();
     bool InitializeBVHSystems();
-    
-    // Update methods
+      // Update methods
     void UpdateInput();
     void UpdateCamera();
     void UpdateFrustum();
     void UpdateBVH();
     void UpdateCulling();
+    void UpdateDynamicObjects();  // New method for object animation
+    void UpdateSceneBounds();  // Dynamic scene bounds calculation
     
     // Culling methods
     void PerformCulling();
     void ProcessOcclusionQueries();
-    
-    // Utility methods
+      // Utility methods
     void CalculateSceneBounds();
     void CreateOcclusionQueries();
+    void UpdateObjectBounds(RenderObject& obj);  // Update bounds from world matrix
+    Vector3 GetObjectPosition(const Matrix& worldMatrix);  // Extract position from matrix
 };

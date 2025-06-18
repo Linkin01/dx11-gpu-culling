@@ -12,6 +12,8 @@ void DXGame::Update() {
 
     UpdateInput();
     UpdateCamera();
+    UpdateDynamicObjects();  // Update object animations
+    UpdateSceneBounds();     // Update scene bounds for dynamic objects
     UpdateFrustum();
     UpdateBVH();
     UpdateCulling();
@@ -81,19 +83,92 @@ void DXGame::UpdateFrustum() {
 }
 
 void DXGame::UpdateBVH() {
-    if (m_bvhNeedsRebuild) {
+    // First, check if we need a full rebuild
+    bool needsRebuild = m_bvhNeedsRebuild;
+    
+    if (m_useGPUBVH && m_gpuBVH && !needsRebuild) {
+        needsRebuild = m_gpuBVH->ShouldRebuildBVH(m_objects);
+    }
+    
+    if (needsRebuild) {
+        // Perform full BVH rebuild
         if (m_useGPUBVH && m_gpuBVH) {
-            m_gpuBVH->BuildBVH(m_objects, m_sceneMinBounds, m_sceneMaxBounds);
+            if (m_gpuBVH->BuildBVH(m_objects, m_sceneMinBounds, m_sceneMaxBounds)) {
+                OutputDebugStringA("GPU BVH rebuilt successfully\n");
+            } else {
+                OutputDebugStringA("GPU BVH rebuild failed, falling back to CPU\n");
+                if (m_cpuBVH) {
+                    m_cpuBVH->BuildBVH(m_objects);
+                }
+            }
         } else if (m_cpuBVH) {
             m_cpuBVH->BuildBVH(m_objects);
         }
+        
         m_bvhNeedsRebuild = false;
+    } else {
+        // Check if any dynamic objects have moved enough to warrant a refit
+        bool hasSignificantMovement = false;
+        for (const auto& obj : m_objects) {
+            if (obj.isDynamic && obj.movementDistance > Config::MOVEMENT_THRESHOLD) {
+                hasSignificantMovement = true;
+                break;
+            }
+        }
+        
+        if (hasSignificantMovement) {
+            // Perform efficient BVH refit
+            if (m_useGPUBVH && m_gpuBVH) {
+                if (!m_gpuBVH->RefitBVH(m_objects)) {
+                    OutputDebugStringA("GPU BVH refit failed\n");
+                    // Don't fallback to CPU refit as it's expensive
+                    // Mark for rebuild next frame instead
+                    m_bvhNeedsRebuild = true;
+                }
+            } else if (m_cpuBVH) {
+                // CPU BVH doesn't have refit, so rebuild
+                m_cpuBVH->BuildBVH(m_objects);
+            }
+        }
     }
 }
 
 void DXGame::UpdateCulling() {
     PerformCulling();
     ProcessOcclusionQueries();
+}
+
+void DXGame::UpdateDynamicObjects() {
+    // Use the GPU BVH system to update dynamic objects if available
+    if (m_useGPUBVH && m_gpuBVH) {
+        m_gpuBVH->UpdateDynamicObjects(m_objects, m_deltaTime);
+    } else {
+        // Fallback: update dynamic objects manually
+        for (auto& obj : m_objects) {
+            if (obj.isDynamic) {
+                // Update animation time
+                obj.animationTime += m_deltaTime;
+                
+                // Calculate new position based on circular motion
+                Vector3 newPosition = obj.animationCenter + Vector3(
+                    cos(obj.animationTime) * obj.animationRadius,
+                    0.0f,
+                    sin(obj.animationTime) * obj.animationRadius
+                );
+                
+                // Calculate movement distance
+                Vector3 currentPos = obj.GetPosition();
+                obj.movementDistance = (newPosition - currentPos).Length();
+                obj.previousPosition = currentPos;
+                
+                // Update world matrix
+                obj.world = Matrix::CreateTranslation(newPosition);
+                
+                // Update bounding box
+                obj.UpdateBounds();
+            }
+        }
+    }
 }
 
 // ============================================================================

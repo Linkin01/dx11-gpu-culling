@@ -149,11 +149,7 @@
     <ClCompile Include="DXGameCore.cpp" />
     <ClCompile Include="DXGameUpdate.cpp" />
     <ClCompile Include="DXGameRender.cpp" />
-    <ClCompile Include="Main.cpp" />
-  </ItemGroup>
-  <ItemGroup Label="Shader Files">
-    <None Include="..\GPUBVHShaders.hlsl" />
-  </ItemGroup>
+    <ClCompile Include="Main.cpp" />  </ItemGroup>
   <ItemGroup Label="Documentation">
     <None Include="..\README.md" />
     <None Include="..\README_CLEAN.md" />

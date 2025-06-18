@@ -38,4 +38,11 @@ namespace Config {
     constexpr int MORTON_CODE_RANGE = 1023;
     constexpr int MSAA_SAMPLES = 4;
     constexpr int OCCLUSION_FRAME_THRESHOLD = 1;
+      // Dynamic BVH constants - properly tuned for performance and quality
+    constexpr float MOVEMENT_THRESHOLD = 0.01f;           // Minimum movement to trigger refit
+    constexpr float REBUILD_THRESHOLD = 2.0f;             // Total movement before full rebuild
+    constexpr float BVH_QUALITY_THRESHOLD = 2.0f;        // Surface area expansion ratio for rebuild
+    constexpr int MAX_FRAMES_BETWEEN_REBUILDS = 300;     // Force rebuild after N frames (5 seconds at 60fps)
+    constexpr float SCENE_BOUNDS_PADDING = 0.1f;         // Padding factor for scene bounds
+    constexpr int BVH_REFIT_ITERATIONS = 3;              // Bottom-up refit iterations for convergence
 }

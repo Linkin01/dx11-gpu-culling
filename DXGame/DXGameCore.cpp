@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "DXGame.h"
 
 // Global variables
@@ -123,46 +124,78 @@ bool DXGame::InitializeDirectXTK() {
 
 bool DXGame::CreateRenderObjects() {
     // Create test cubes arranged vertically for better occlusion testing
-    m_objects.resize(9);
+    m_objects.resize(12);  // Increased to include dynamic objects
 
     // Bottom row cubes (Y = -2) - these should occlude upper cubes when looking from below
     m_objects[0].world = Matrix::CreateTranslation(Vector3(-4, -2, 10));
     m_objects[0].minBounds = Vector3(-5, -3, 9);
     m_objects[0].maxBounds = Vector3(-3, -1, 11);
+    m_objects[0].baseSize = Vector3(2, 2, 2);
 
     m_objects[1].world = Matrix::CreateTranslation(Vector3(0, -2, 10));
     m_objects[1].minBounds = Vector3(-1, -3, 9);
     m_objects[1].maxBounds = Vector3(1, -1, 11);
+    m_objects[1].baseSize = Vector3(2, 2, 2);
 
     m_objects[2].world = Matrix::CreateTranslation(Vector3(4, -2, 10));
     m_objects[2].minBounds = Vector3(3, -3, 9);
     m_objects[2].maxBounds = Vector3(5, -1, 11);
+    m_objects[2].baseSize = Vector3(2, 2, 2);
 
     // Middle row cubes (Y = 0)
     m_objects[3].world = Matrix::CreateTranslation(Vector3(-4, 0, 10));
     m_objects[3].minBounds = Vector3(-5, -1, 9);
     m_objects[3].maxBounds = Vector3(-3, 1, 11);
+    m_objects[3].baseSize = Vector3(2, 2, 2);
 
     m_objects[4].world = Matrix::CreateTranslation(Vector3(0, 0, 10));
     m_objects[4].minBounds = Vector3(-1, -1, 9);
     m_objects[4].maxBounds = Vector3(1, 1, 11);
+    m_objects[4].baseSize = Vector3(2, 2, 2);
 
     m_objects[5].world = Matrix::CreateTranslation(Vector3(4, 0, 10));
     m_objects[5].minBounds = Vector3(3, -1, 9);
     m_objects[5].maxBounds = Vector3(5, 1, 11);
+    m_objects[5].baseSize = Vector3(2, 2, 2);
 
     // Top row cubes (Y = 2) - these should be occluded when looking from below
     m_objects[6].world = Matrix::CreateTranslation(Vector3(-4, 2, 10));
     m_objects[6].minBounds = Vector3(-5, 1, 9);
     m_objects[6].maxBounds = Vector3(-3, 3, 11);
+    m_objects[6].baseSize = Vector3(2, 2, 2);
 
     m_objects[7].world = Matrix::CreateTranslation(Vector3(0, 2, 10));
     m_objects[7].minBounds = Vector3(-1, 1, 9);
     m_objects[7].maxBounds = Vector3(1, 3, 11);
+    m_objects[7].baseSize = Vector3(2, 2, 2);
 
     m_objects[8].world = Matrix::CreateTranslation(Vector3(4, 2, 10));
     m_objects[8].minBounds = Vector3(3, 1, 9);
     m_objects[8].maxBounds = Vector3(5, 3, 11);
+    m_objects[8].baseSize = Vector3(2, 2, 2);    // Dynamic objects - circular moving cubes for testing
+    m_objects[9].world = Matrix::CreateTranslation(Vector3(-8, 0, 15));
+    m_objects[9].baseSize = Vector3(2, 2, 2);
+    m_objects[9].isDynamic = true;
+    m_objects[9].animationCenter = Vector3(-8, 0, 15);  // Center of circular motion
+    m_objects[9].animationRadius = 3.0f;  // Radius of 3 units
+    m_objects[9].animationTime = 0.0f;
+    m_objects[9].UpdateBounds();
+
+    m_objects[10].world = Matrix::CreateTranslation(Vector3(8, 0, 15));
+    m_objects[10].baseSize = Vector3(2, 2, 2);
+    m_objects[10].isDynamic = true;
+    m_objects[10].animationCenter = Vector3(8, 0, 15);  // Center of circular motion
+    m_objects[10].animationRadius = 4.0f;  // Radius of 4 units
+    m_objects[10].animationTime = 1.57f;  // Start at 90 degrees offset
+    m_objects[10].UpdateBounds();
+
+    m_objects[11].world = Matrix::CreateTranslation(Vector3(0, 4, 12));
+    m_objects[11].baseSize = Vector3(2, 2, 2);
+    m_objects[11].isDynamic = true;
+    m_objects[11].animationCenter = Vector3(0, 4, 12);  // Center of circular motion
+    m_objects[11].animationRadius = 2.5f;  // Radius of 2.5 units
+    m_objects[11].animationTime = 3.14f;  // Start at 180 degrees offset
+    m_objects[11].UpdateBounds();
 
     CreateOcclusionQueries();
     return true;
@@ -207,6 +240,69 @@ void DXGame::CalculateSceneBounds() {
     m_sceneMaxBounds += padding;
 }
 
+void DXGame::UpdateSceneBounds() {
+    if (m_objects.empty()) {
+        m_sceneMinBounds = Vector3::Zero;
+        m_sceneMaxBounds = Vector3::Zero;
+        return;
+    }
+
+    // Initialize with first object's bounds
+    m_sceneMinBounds = m_objects[0].minBounds;
+    m_sceneMaxBounds = m_objects[0].maxBounds;
+
+    // Expand bounds to encompass all objects
+    for (size_t i = 1; i < m_objects.size(); ++i) {
+        const auto& obj = m_objects[i];
+        
+        // Use current bounds for static objects, predicted bounds for dynamic objects
+        Vector3 objMinBounds = obj.minBounds;
+        Vector3 objMaxBounds = obj.maxBounds;
+        
+        if (obj.isDynamic) {
+            // Add velocity-based prediction for fast-moving objects
+            Vector3 velocityPadding = obj.velocity * 0.1f; // 100ms prediction
+            objMinBounds = Vector3::Min(objMinBounds, objMinBounds + velocityPadding);
+            objMaxBounds = Vector3::Max(objMaxBounds, objMaxBounds + velocityPadding);
+        }
+        
+        m_sceneMinBounds = Vector3::Min(m_sceneMinBounds, objMinBounds);
+        m_sceneMaxBounds = Vector3::Max(m_sceneMaxBounds, objMaxBounds);
+    }
+
+    // Add intelligent padding based on scene characteristics
+    Vector3 sceneSize = m_sceneMaxBounds - m_sceneMinBounds;
+    Vector3 basePadding = sceneSize * Config::SCENE_BOUNDS_PADDING;
+    
+    // Additional padding for scenes with many dynamic objects
+    int dynamicObjectCount = 0;
+    float maxVelocity = 0.0f;
+    for (const auto& obj : m_objects) {
+        if (obj.isDynamic) {
+            dynamicObjectCount++;
+            maxVelocity = std::max(maxVelocity, obj.velocity.Length());
+        }
+    }
+    
+    // Velocity-based padding for dynamic scenes
+    Vector3 velocityPadding = Vector3::One * (maxVelocity * 0.2f);
+    Vector3 totalPadding = basePadding + velocityPadding;
+    
+    m_sceneMinBounds -= totalPadding;
+    m_sceneMaxBounds += totalPadding;
+    
+    // Ensure minimum scene size to prevent degenerate cases
+    Vector3 finalSize = m_sceneMaxBounds - m_sceneMinBounds;
+    const float minSceneSize = 1.0f;
+    
+    if (finalSize.x < minSceneSize || finalSize.y < minSceneSize || finalSize.z < minSceneSize) {
+        Vector3 center = (m_sceneMinBounds + m_sceneMaxBounds) * 0.5f;
+        Vector3 halfMinSize = Vector3::One * (minSceneSize * 0.5f);
+        m_sceneMinBounds = center - halfMinSize;
+        m_sceneMaxBounds = center + halfMinSize;
+    }
+}
+
 void DXGame::CreateOcclusionQueries() {
     D3D11_QUERY_DESC queryDesc = {};
     queryDesc.Query = D3D11_QUERY_OCCLUSION;
@@ -222,4 +318,18 @@ void DXGame::CreateOcclusionQueries() {
         obj.visible = true;
         obj.occludedFrameCount = 0;
     }
+}
+
+void DXGame::UpdateObjectBounds(RenderObject& obj) {
+    // Extract position from world matrix
+    Vector3 position = GetObjectPosition(obj.world);
+    
+    // Update bounding box based on object's base size and current position
+    Vector3 halfSize = obj.baseSize * 0.5f;
+    obj.minBounds = position - halfSize;
+    obj.maxBounds = position + halfSize;
+}
+
+Vector3 DXGame::GetObjectPosition(const Matrix& worldMatrix) {
+    return Vector3(worldMatrix._41, worldMatrix._42, worldMatrix._43);
 }

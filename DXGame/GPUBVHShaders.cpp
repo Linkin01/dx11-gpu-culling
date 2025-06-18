@@ -5,10 +5,11 @@
 const char* GPUBVHSystem::GetMortonCodeShaderSource() {
     return R"(
         struct ObjectData {
-            float3 minBounds;
-            float3 maxBounds;
+            float4 minBounds;
+            float4 maxBounds;
             int objectIndex;
             int occludedFrameCount;
+            int2 padding;
         };
         
         struct MortonCode {
@@ -53,9 +54,8 @@ const char* GPUBVHSystem::GetMortonCodeShaderSource() {
             if (id.x >= (uint)Params.objectCount) return;
             
             ObjectData obj = Objects[id.x];
-            
-            // Calculate object center
-            float3 center = (obj.minBounds + obj.maxBounds) * 0.5f;
+              // Calculate object center
+            float3 center = (obj.minBounds.xyz + obj.maxBounds.xyz) * 0.5f;
             
             // Normalize to [0, 1023] range for Morton code
             float3 extent = Params.sceneMaxBounds - Params.sceneMinBounds;
@@ -78,23 +78,21 @@ const char* GPUBVHSystem::GetBVHConstructionShaderSource() {
             int objectIndex;
             float2 padding;
         };
-        
-        struct ObjectData {
-            float3 minBounds;
-            float3 maxBounds;
+          struct ObjectData {
+            float4 minBounds;
+            float4 maxBounds;
             int objectIndex;
             int occludedFrameCount;
+            int2 padding;
         };
         
         struct BVHNode {
-            float3 minBounds;
-            float3 maxBounds;
+            float4 minBounds;
+            float4 maxBounds;
             int leftChild;
             int rightChild;
             int objectIndex;
             int isLeaf;
-            int parent;
-            int atomicCounter;
         };
         
         struct BVHConstructionParams {
@@ -139,19 +137,18 @@ const char* GPUBVHSystem::GetBVHConstructionShaderSource() {
             
             return split;
         }
-        
-        // Calculate bounding box for a range of objects
+          // Calculate bounding box for a range of objects
         void calculateBounds(int first, int last, out float3 minBounds, out float3 maxBounds) {
             int firstObjIdx = SortedMortonCodes[first].objectIndex;
             ObjectData firstObj = Objects[firstObjIdx];
-            minBounds = firstObj.minBounds;
-            maxBounds = firstObj.maxBounds;
+            minBounds = firstObj.minBounds.xyz;
+            maxBounds = firstObj.maxBounds.xyz;
             
             for (int i = first + 1; i <= last; i++) {
                 int objIdx = SortedMortonCodes[i].objectIndex;
                 ObjectData obj = Objects[objIdx];
-                minBounds = min(minBounds, obj.minBounds);
-                maxBounds = max(maxBounds, obj.maxBounds);
+                minBounds = min(minBounds, obj.minBounds.xyz);
+                maxBounds = max(maxBounds, obj.maxBounds.xyz);
             }
         }
         
@@ -166,16 +163,12 @@ const char* GPUBVHSystem::GetBVHConstructionShaderSource() {
                 if (leafIndex < Params.objectCount) {
                     int objIdx = SortedMortonCodes[leafIndex].objectIndex;
                     ObjectData obj = Objects[objIdx];
-                    
-                    int leafNodeIndex = numInternalNodes + leafIndex;
-                    BVHNodes[leafNodeIndex].minBounds = obj.minBounds;
-                    BVHNodes[leafNodeIndex].maxBounds = obj.maxBounds;
-                    BVHNodes[leafNodeIndex].leftChild = -1;
+                      int leafNodeIndex = numInternalNodes + leafIndex;
+                    BVHNodes[leafNodeIndex].minBounds = float4(obj.minBounds.xyz, 0.0f);
+                    BVHNodes[leafNodeIndex].maxBounds = float4(obj.maxBounds.xyz, 0.0f);                    BVHNodes[leafNodeIndex].leftChild = -1;
                     BVHNodes[leafNodeIndex].rightChild = -1;
                     BVHNodes[leafNodeIndex].objectIndex = objIdx;
                     BVHNodes[leafNodeIndex].isLeaf = 1;
-                    BVHNodes[leafNodeIndex].parent = -1;
-                    BVHNodes[leafNodeIndex].atomicCounter = 0;
                 }
                 return;
             }
@@ -205,45 +198,35 @@ const char* GPUBVHSystem::GetBVHConstructionShaderSource() {
             // Create child indices
             int leftChild = (split == first) ? numInternalNodes + split : split;
             int rightChild = (split + 1 == last) ? numInternalNodes + split + 1 : split + 1;
-            
-            BVHNodes[nodeIndex].leftChild = leftChild;
+              BVHNodes[nodeIndex].leftChild = leftChild;
             BVHNodes[nodeIndex].rightChild = rightChild;
             BVHNodes[nodeIndex].objectIndex = -1;
             BVHNodes[nodeIndex].isLeaf = 0;
-            BVHNodes[nodeIndex].parent = -1;
-            BVHNodes[nodeIndex].atomicCounter = 0;
-            
-            // Set parent pointers
-            BVHNodes[leftChild].parent = nodeIndex;
-            BVHNodes[rightChild].parent = nodeIndex;
             
             // Calculate bounding box
             float3 minBounds, maxBounds;
-            calculateBounds(first, last, minBounds, maxBounds);
-            BVHNodes[nodeIndex].minBounds = minBounds;
-            BVHNodes[nodeIndex].maxBounds = maxBounds;
+            calculateBounds(first, last, minBounds, maxBounds);            BVHNodes[nodeIndex].minBounds = float4(minBounds, 0.0f);
+            BVHNodes[nodeIndex].maxBounds = float4(maxBounds, 0.0f);
         }
     )";
 }
 
 const char* GPUBVHSystem::GetFrustumCullingShaderSource() {
-    return R"(
-        struct BVHNode {
-            float3 minBounds;
-            float3 maxBounds;
+    return R"(        struct BVHNode {
+            float4 minBounds;
+            float4 maxBounds;
             int leftChild;
             int rightChild;
             int objectIndex;
             int isLeaf;
-            int parent;
-            int atomicCounter;
         };
         
         struct ObjectData {
-            float3 minBounds;
-            float3 maxBounds;
+            float4 minBounds;
+            float4 maxBounds;
             int objectIndex;
             int occludedFrameCount;
+            int2 padding;
         };
         
         struct Frustum {
@@ -264,73 +247,55 @@ const char* GPUBVHSystem::GetFrustumCullingShaderSource() {
         RWStructuredBuffer<int> Visibility : register(u0);
         
         bool IsBoxInFrustum(float3 minBounds, float3 maxBounds) {
+            // Test AABB against all 6 frustum planes using positive vertex test
             for (int i = 0; i < 6; i++) {
                 float4 plane = FrustumData.planes[i];
+                
+                // Find the positive vertex (corner of AABB furthest in plane normal direction)
                 float3 positiveVertex;
                 positiveVertex.x = (plane.x >= 0.0f) ? maxBounds.x : minBounds.x;
                 positiveVertex.y = (plane.y >= 0.0f) ? maxBounds.y : minBounds.y;
                 positiveVertex.z = (plane.z >= 0.0f) ? maxBounds.z : minBounds.z;
                 
+                // If positive vertex is outside plane, entire AABB is outside frustum
                 float distance = dot(plane.xyz, positiveVertex) + plane.w;
                 if (distance < 0.0f) {
                     return false;
                 }
             }
             return true;
-        }
-        
-        [numthreads(64, 1, 1)]
+        }        [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID) {
-            uint threadId = id.x;
+            uint objectIndex = id.x;
             
-            // Each thread processes multiple objects for better efficiency
-            uint objectsPerThread = (Params.objectCount + 63) / 64;
-            uint startIdx = threadId * objectsPerThread;
-            uint endIdx = min(startIdx + objectsPerThread, (uint)Params.objectCount);
-            
-            // Process objects assigned to this thread
-            for (uint objIdx = startIdx; objIdx < endIdx; objIdx++) {
-                ObjectData obj = Objects[objIdx];
-                
-                // Only reset if not heavily occluded
-                if (obj.occludedFrameCount <= 2) {
-                    Visibility[objIdx] = 0;
-                    
-                    // Traverse BVH iteratively to find this object
-                    int stack[64];
-                    int stackPtr = 0;
-                    
-                    if (Params.rootNodeIndex >= 0) {
-                        stack[stackPtr++] = Params.rootNodeIndex;
-                        
-                        while (stackPtr > 0 && stackPtr < 64) {
-                            int nodeIndex = stack[--stackPtr];
-                            
-                            if (nodeIndex < 0 || nodeIndex >= Params.nodeCount) continue;
-                            
-                            BVHNode node = BVHNodes[nodeIndex];
-                            
-                            if (!IsBoxInFrustum(node.minBounds, node.maxBounds)) {
-                                continue;
-                            }
-                            
-                            if (node.isLeaf) {
-                                if (node.objectIndex == (int)objIdx) {
-                                    Visibility[objIdx] = 1;
-                                    break;
-                                }
-                            } else {
-                                if (node.rightChild >= 0 && stackPtr < 63) {
-                                    stack[stackPtr++] = node.rightChild;
-                                }
-                                if (node.leftChild >= 0 && stackPtr < 63) {
-                                    stack[stackPtr++] = node.leftChild;
-                                }
-                            }
-                        }
-                    }
-                }
+            // Early exit if thread ID exceeds object count
+            if (objectIndex >= (uint)Params.objectCount) {
+                return;
             }
+            
+            // Initialize visibility to false (conservative approach)
+            Visibility[objectIndex] = 0;
+            
+            // Get object data (bounds already checked above)
+            ObjectData obj = Objects[objectIndex];
+            
+            // Skip heavily occluded objects to reduce GPU load
+            if (obj.occludedFrameCount > 5) {
+                return;
+            }
+              // Validate bounding box before testing
+            if (any(isnan(obj.minBounds)) || any(isnan(obj.maxBounds)) ||
+                any(obj.minBounds.xyz > obj.maxBounds.xyz)) {
+                return; // Invalid bounds
+            }
+            
+            // Test object's bounding box directly against frustum
+            if (!IsBoxInFrustum(obj.minBounds.xyz, obj.maxBounds.xyz)) {
+                return; // Outside frustum
+            }
+            
+            // Object passed frustum test - mark as visible
+            Visibility[objectIndex] = 1;
         }
     )";
 }

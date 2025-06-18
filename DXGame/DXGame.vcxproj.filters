@@ -11,12 +11,7 @@
     </Filter>
     <Filter Include="Resource Files">
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
-      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
-    </Filter>
-    <Filter Include="Shader Files">
-      <UniqueIdentifier>{E12C6187-8E19-4E76-87B4-FF10F6E58542}</UniqueIdentifier>
-      <Extensions>hlsl;fx;fxh;shader</Extensions>
-    </Filter>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>    </Filter>
     <Filter Include="Documentation">
       <UniqueIdentifier>{F8E7E471-2F9F-4B33-8B91-C5F8E9A1A2E3}</UniqueIdentifier>
       <Extensions>md;txt;doc</Extensions>
@@ -82,15 +77,7 @@
     </ClCompile>
     <ClCompile Include="Main.cpp">
       <Filter>Source Files</Filter>
-    </ClCompile>
-  </ItemGroup>
-  
-  <!-- Shader Files -->
-  <ItemGroup>
-    <None Include="..\GPUBVHShaders.hlsl">
-      <Filter>Shader Files</Filter>
-    </None>
-  </ItemGroup>
+    </ClCompile>  </ItemGroup>
   
   <!-- Documentation -->
   <ItemGroup>
